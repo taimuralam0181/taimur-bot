@@ -222,8 +222,8 @@ def load_config() -> Config:
         volume_spike_factor=float(os.getenv("BOT_VOLUME_SPIKE_FACTOR", "1.02")),
         breakout_buffer_pct=float(os.getenv("BOT_BREAKOUT_BUFFER_PCT", "0.0006")),
         cooldown_candles=int(os.getenv("BOT_COOLDOWN_CANDLES", "2")),
-        min_signal_score=int(os.getenv("BOT_MIN_SIGNAL_SCORE", "68")),
-        vip_signal_score=int(os.getenv("BOT_VIP_SIGNAL_SCORE", "80")),
+        min_signal_score=int(os.getenv("BOT_MIN_SIGNAL_SCORE", "66")),
+        vip_signal_score=int(os.getenv("BOT_VIP_SIGNAL_SCORE", "78")),
         normal_risk_pct=float(os.getenv("BOT_NORMAL_RISK_PCT", "0.5")),
         vip_risk_pct=float(os.getenv("BOT_VIP_RISK_PCT", "0.8")),
         normal_leverage=os.getenv("BOT_NORMAL_LEVERAGE", "3x-5x").strip(),
@@ -1840,7 +1840,9 @@ def evaluate_long_setup(
         score += 10
         reasons.append("Price is not overextended from EMA50")
 
-    mandatory_checks = [trend_up, breakout, bullish_body, not_overextended]
+    structure_confirmed = breakout or retest_hold
+
+    mandatory_checks = [trend_up, structure_confirmed, bullish_body, not_overextended]
     if config.require_higher_timeframe_confirmation and confirmation_interval(config.interval):
         mandatory_checks.append(htf_confirmed)
 
@@ -1926,7 +1928,9 @@ def evaluate_short_setup(
         score += 10
         reasons.append("Price is not overextended from EMA50")
 
-    mandatory_checks = [trend_down, breakdown, bearish_body, not_overextended]
+    structure_confirmed = breakdown or retest_fail
+
+    mandatory_checks = [trend_down, structure_confirmed, bearish_body, not_overextended]
     if config.require_higher_timeframe_confirmation and confirmation_interval(config.interval):
         mandatory_checks.append(htf_confirmed)
 
