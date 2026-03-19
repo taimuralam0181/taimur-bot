@@ -1,0 +1,118 @@
+{
+  "last_checked_candle_time": 1773839700000,
+  "intervals": {
+    "1m": {
+      "last_checked_candle_time": 1773844740000,
+      "last_signal_side": "SHORT",
+      "last_signal_candle_time": 1773844080000,
+      "last_signal_sent_time": "2026-03-18 08:29:20 PM Bangladesh Standard Time"
+    },
+    "3m": {
+      "last_checked_candle_time": 1773844560000,
+      "last_signal_side": "SHORT",
+      "last_signal_candle_time": 1773844020000,
+      "last_signal_sent_time": "2026-03-18 08:30:28 PM Bangladesh Standard Time"
+    },
+    "5m": {
+      "last_checked_candle_time": 1773844500000,
+      "last_signal_side": "SHORT",
+      "last_signal_candle_time": 1773843900000,
+      "last_signal_sent_time": "2026-03-18 08:30:30 PM Bangladesh Standard Time"
+    },
+    "15m": {
+      "last_checked_candle_time": 1773850500000
+    },
+    "30m": {
+      "last_checked_candle_time": 1773842400000
+    },
+    "1h": {
+      "last_checked_candle_time": 1773846000000,
+      "last_signal_side": "SHORT",
+      "last_signal_candle_time": 1773835200000
+    },
+    "2h": {
+      "last_checked_candle_time": 1773835200000
+    },
+    "4h": {
+      "last_checked_candle_time": 1773835200000
+    },
+    "6h": {
+      "last_checked_candle_time": 1773813600000
+    },
+    "8h": {
+      "last_checked_candle_time": 1773792000000
+    },
+    "12h": {
+      "last_checked_candle_time": 1773792000000
+    },
+    "1d": {
+      "last_checked_candle_time": 1773705600000
+    },
+    "3d": {
+      "last_checked_candle_time": 1773446400000
+    },
+    "1w": {
+      "last_checked_candle_time": 1773014400000
+    },
+    "1M": {
+      "last_checked_candle_time": 1769904000000,
+      "insufficient_data_required": 202,
+      "insufficient_data_available": 84
+    }
+  },
+  "symbols": {
+    "ETHUSDT": {
+      "intervals": {
+        "15m": {
+          "last_checked_candle_time": 1773902700000
+        },
+        "1h": {
+          "last_checked_candle_time": 1773900000000
+        },
+        "4h": {
+          "last_checked_candle_time": 1773878400000
+        },
+        "5m": {
+          "last_checked_candle_time": 1773903600000
+        }
+      }
+    },
+    "BTCUSDT": {
+      "intervals": {
+        "15m": {
+          "last_checked_candle_time": 1773900900000
+        },
+        "1h": {
+          "last_checked_candle_time": 1773896400000
+        },
+        "4h": {
+          "last_checked_candle_time": 1773878400000
+        },
+        "5m": {
+          "last_checked_candle_time": 1773902100000
+        }
+      }
+    },
+    "ZECUSDT": {
+      "intervals": {
+        "15m": {
+          "last_checked_candle_time": 1773902700000
+        },
+        "1h": {
+          "last_checked_candle_time": 1773900000000
+        },
+        "4h": {
+          "last_checked_candle_time": 1773878400000
+        },
+        "5m": {
+          "last_checked_candle_time": 1773903600000
+        }
+      }
+    }
+  },
+  "performance": {
+    "daily": {},
+    "last_daily_report_date": "",
+    "recent_closed": []
+  }
+}
