@@ -2579,6 +2579,81 @@ def build_signal_checker_message(config: Config) -> str:
     return "\n".join(lines).rstrip()
 
 
+def build_user_signal_check_message(
+    base_config: Config,
+    symbol: str,
+    interval: str,
+    requested_side: Optional[str],
+) -> str:
+    symbol = symbol.strip().upper()
+    interval = interval.strip()
+    side = requested_side.strip().upper() if requested_side else ""
+
+    if side and side not in {"LONG", "SHORT"}:
+        raise ValueError("Side must be LONG or SHORT.")
+
+    interval_to_milliseconds(interval)
+    interval_config = config_for_interval(config_for_symbol(base_config, symbol), interval)
+    candles = fetch_klines(interval_config)
+    higher_timeframe_trend = fetch_confirmation_trend(interval_config, interval)
+    analysis = analyze_market(candles, interval_config, higher_timeframe_trend)
+    best_side, best_score, quality, note = classify_signal_checker_result(analysis, interval_config)
+    current_price = candles[-1].close
+    watch_threshold = max(interval_config.min_signal_score - interval_config.watch_alert_score_gap, 54)
+
+    if side in {"LONG", "SHORT"}:
+        requested_score = analysis.long_score if side == "LONG" else analysis.short_score
+
+        if analysis.signal and analysis.signal.side == side:
+            verdict = "GOOD"
+            detail_note = f"Bot agrees: {analysis.signal.tier} {analysis.signal.grade}"
+        elif requested_score >= watch_threshold:
+            verdict = "WATCH"
+            detail_note = "Setup close. Next candle confirm wait koro."
+        else:
+            verdict = "BAD"
+            detail_note = "Current market-e ei side weak."
+
+        if best_side in {"LONG", "SHORT"} and best_side != side and best_score >= requested_score + 6:
+            verdict = "BAD"
+            detail_note = f"Bot prefers {best_side} side right now."
+
+        return (
+            "USER SIGNAL CHECK\n\n"
+            f"Pair: {symbol}\n"
+            f"Timeframe: {interval}\n"
+            f"User Side: {side}\n"
+            f"Current Price: {format_price(current_price)}\n"
+            f"LONG Score: {analysis.long_score}\n"
+            f"SHORT Score: {analysis.short_score}\n"
+            f"Requested Side Score: {requested_score}\n"
+            f"Bot Best Side: {best_side} {best_score}\n"
+            f"Bot Verdict: {verdict}\n"
+            f"Quality Note: {detail_note}\n"
+            f"Market Trend: {analysis.market_overview.trend}\n"
+            f"Entry Verdict: {analysis.market_overview.entry_rule}\n"
+            f"Breakout: {analysis.market_overview.breakout_check}\n"
+            f"Momentum: {analysis.market_overview.volume_momentum}\n"
+            f"Checker Note: {note}"
+        )
+
+    return (
+        "USER SIGNAL CHECK\n\n"
+        f"Pair: {symbol}\n"
+        f"Timeframe: {interval}\n"
+        f"Current Price: {format_price(current_price)}\n"
+        f"LONG Score: {analysis.long_score}\n"
+        f"SHORT Score: {analysis.short_score}\n"
+        f"Bot Best Side: {best_side} {best_score}\n"
+        f"Bot Verdict: {quality}\n"
+        f"Quality Note: {note}\n"
+        f"Market Trend: {analysis.market_overview.trend}\n"
+        f"Entry Verdict: {analysis.market_overview.entry_rule}\n"
+        f"Breakout: {analysis.market_overview.breakout_check}\n"
+        f"Momentum: {analysis.market_overview.volume_momentum}"
+    )
+
+
 def build_status_message(config: Config, state: Dict[str, object]) -> str:
     performance_state = get_performance_state(state)
     overall_stats = get_stats_bucket(performance_state, "overall")
@@ -2654,6 +2729,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "Commands:\n"
         "/status - live bot summary\n"
         "/checksignal - score check, good or bad\n"
+        "/usersignal BTCUSDT 15m LONG - user signal judge\n"
         "/market - current market condition\n"
         "/accuracy - real accuracy tracker\n"
         "/active - open mentor trades\n"
@@ -2689,6 +2765,52 @@ async def checksignal_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         LOGGER.exception("Signal checker crashed: %s", exc)
         if update.effective_message:
             await update.effective_message.reply_text(f"Signal checker crashed: {exc}")
+        return
+
+    if update.effective_message:
+        await update.effective_message.reply_text(message)
+
+
+async def usersignal_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    config: Config = context.application.bot_data["config"]
+    args = context.args
+
+    if len(args) < 2:
+        if update.effective_message:
+            await update.effective_message.reply_text(
+                "Use: /usersignal BTCUSDT 15m LONG\n"
+                "Or: /usersignal ETHUSDT 1h"
+            )
+        return
+
+    symbol = args[0]
+    interval = args[1]
+    requested_side = args[2] if len(args) >= 3 else None
+
+    if update.effective_message:
+        await update.effective_message.reply_text("Checking your signal...")
+
+    try:
+        message = await asyncio.to_thread(
+            build_user_signal_check_message,
+            config,
+            symbol,
+            interval,
+            requested_side,
+        )
+    except ValueError as exc:
+        if update.effective_message:
+            await update.effective_message.reply_text(f"Invalid input: {exc}")
+        return
+    except requests.RequestException as exc:
+        LOGGER.warning("User signal check failed due to network/API error: %s", exc)
+        if update.effective_message:
+            await update.effective_message.reply_text(f"User signal check failed: {exc}")
+        return
+    except Exception as exc:
+        LOGGER.exception("User signal check crashed: %s", exc)
+        if update.effective_message:
+            await update.effective_message.reply_text(f"User signal check crashed: {exc}")
         return
 
     if update.effective_message:
@@ -2815,6 +2937,7 @@ def build_application(config: Config, state: Dict[str, object]) -> Application:
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("status", status_command))
     application.add_handler(CommandHandler("checksignal", checksignal_command))
+    application.add_handler(CommandHandler("usersignal", usersignal_command))
     application.add_handler(CommandHandler("market", market_command))
     application.add_handler(CommandHandler("accuracy", accuracy_command))
     application.add_handler(CommandHandler("active", active_command))
