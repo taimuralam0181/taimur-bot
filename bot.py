@@ -1316,6 +1316,8 @@ def build_active_trade(signal: Signal, sent_time: str) -> Dict[str, object]:
         "side": signal.side,
         "score": signal.score,
         "entry": signal.entry,
+        "market_structure_level": signal.market_structure_level,
+        "atr": signal.atr,
         "stop_loss": signal.stop_loss,
         "current_stop_loss": signal.stop_loss,
         "take_profits": signal.take_profits,
@@ -1325,6 +1327,7 @@ def build_active_trade(signal: Signal, sent_time: str) -> Dict[str, object]:
         "realized_r": 0.0,
         "tp1_hit": False,
         "tp2_hit": False,
+        "best_entry_alert_key": "",
     }
 
 
@@ -1374,6 +1377,79 @@ def format_trade_update_message(
         f"Reason: {reason}\n\n"
         f"Action:\n{actions}"
     )
+
+
+def maybe_send_best_entry_alert(
+    config: Config,
+    trade: Dict[str, object],
+    candle: Candle,
+    ema_fast_value: float,
+) -> bool:
+    if bool(trade.get("tp1_hit")):
+        return False
+
+    alert_key = f"best-entry:{candle.open_time}"
+    if str(trade.get("best_entry_alert_key", "")) == alert_key:
+        return False
+
+    entry = float(trade["entry"])
+    structure = float(trade.get("market_structure_level", entry))
+    atr = max(float(trade.get("atr", 0.0) or 0.0), 1e-9)
+    side = str(trade["side"])
+    zone_buffer = max(atr * 0.25, entry * 0.001)
+
+    if side == "LONG":
+        touched_best_entry_zone = candle.low <= (structure + zone_buffer)
+        confirmed_reclaim = candle.close >= structure and candle.close > candle.open
+        trend_ok = candle.close >= ema_fast_value
+        if not (touched_best_entry_zone and confirmed_reclaim and trend_ok):
+            return False
+
+        best_entry_price = min(entry, structure + zone_buffer)
+        send_telegram(
+            format_trade_update_message(
+                config,
+                trade,
+                "BEST ENTRY ALERT",
+                "Price retested the breakout/support zone and closed back strong.",
+                [
+                    f"Best entry zone: {format_price(best_entry_price)} around support/retest area",
+                    f"Keep invalidation below {format_price(float(trade['current_stop_loss']))}",
+                    "Take entry only if you still do not have position",
+                ],
+                candle.open_time,
+                candle.close,
+            ),
+            config,
+        )
+        trade["best_entry_alert_key"] = alert_key
+        return True
+
+    touched_best_entry_zone = candle.high >= (structure - zone_buffer)
+    confirmed_reject = candle.close <= structure and candle.close < candle.open
+    trend_ok = candle.close <= ema_fast_value
+    if not (touched_best_entry_zone and confirmed_reject and trend_ok):
+        return False
+
+    best_entry_price = max(entry, structure - zone_buffer)
+    send_telegram(
+        format_trade_update_message(
+            config,
+            trade,
+            "BEST ENTRY ALERT",
+            "Price retested the breakdown/resistance zone and closed back weak.",
+            [
+                f"Best entry zone: {format_price(best_entry_price)} around resistance/retest area",
+                f"Keep invalidation above {format_price(float(trade['current_stop_loss']))}",
+                "Take entry only if you still do not have position",
+            ],
+            candle.open_time,
+            candle.close,
+        ),
+        config,
+    )
+    trade["best_entry_alert_key"] = alert_key
+    return True
 
 
 def manage_active_trade(
@@ -1443,6 +1519,9 @@ def manage_active_trade(
                 current_stop,
                 "Stop loss touched",
             )
+
+        if maybe_send_best_entry_alert(config, trade, last, ema_fast[-1]):
+            persist_open_trade()
 
         if not bool(trade.get("tp1_hit")) and last.high >= tp1:
             trade["tp1_hit"] = True
@@ -1514,6 +1593,9 @@ def manage_active_trade(
                 current_stop,
                 "Stop loss touched",
             )
+
+        if maybe_send_best_entry_alert(config, trade, last, ema_fast[-1]):
+            persist_open_trade()
 
         if not bool(trade.get("tp1_hit")) and last.low <= tp1:
             trade["tp1_hit"] = True
