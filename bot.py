@@ -66,6 +66,8 @@ class Config:
     vip_leverage: str
     margin_mode: str
     require_higher_timeframe_confirmation: bool
+    watch_alert_enabled: bool
+    watch_alert_score_gap: int
     max_extension_atr: float
     atr_stop_multiplier: float
     tp_one_r: float
@@ -134,6 +136,14 @@ class MarketOverview:
     bearish_rejection_valid: bool
     strong_bullish_candle: bool
     strong_bearish_candle: bool
+
+
+@dataclass
+class AnalysisResult:
+    signal: Optional[Signal]
+    market_overview: MarketOverview
+    long_score: int
+    short_score: int
 
 
 def parse_intervals() -> List[str]:
@@ -235,6 +245,8 @@ def load_config() -> Config:
         require_higher_timeframe_confirmation=parse_bool_env(
             "BOT_REQUIRE_HTF_CONFIRMATION", False
         ),
+        watch_alert_enabled=parse_bool_env("BOT_WATCH_ALERT_ENABLED", True),
+        watch_alert_score_gap=int(os.getenv("BOT_WATCH_ALERT_SCORE_GAP", "6")),
         max_extension_atr=float(os.getenv("BOT_MAX_EXTENSION_ATR", "2.3")),
         atr_stop_multiplier=float(os.getenv("BOT_ATR_STOP_MULTIPLIER", "1.2")),
         tp_one_r=float(os.getenv("BOT_TP1_R", "1.5")),
@@ -374,6 +386,8 @@ def config_for_interval(config: Config, interval: str) -> Config:
         vip_leverage=config.vip_leverage,
         margin_mode=config.margin_mode,
         require_higher_timeframe_confirmation=config.require_higher_timeframe_confirmation,
+        watch_alert_enabled=config.watch_alert_enabled,
+        watch_alert_score_gap=config.watch_alert_score_gap,
         max_extension_atr=config.max_extension_atr,
         atr_stop_multiplier=config.atr_stop_multiplier,
         tp_one_r=config.tp_one_r,
@@ -414,6 +428,8 @@ def config_for_symbol(config: Config, symbol: str) -> Config:
         vip_leverage=config.vip_leverage,
         margin_mode=config.margin_mode,
         require_higher_timeframe_confirmation=config.require_higher_timeframe_confirmation,
+        watch_alert_enabled=config.watch_alert_enabled,
+        watch_alert_score_gap=config.watch_alert_score_gap,
         max_extension_atr=config.max_extension_atr,
         atr_stop_multiplier=config.atr_stop_multiplier,
         tp_one_r=config.tp_one_r,
@@ -846,6 +862,92 @@ def build_market_condition_alert_message(
         f"Verdict: {overview.entry_rule}\n\n"
         f"What Now:\n{action_lines}"
     )
+
+
+def build_watch_alert_message(
+    config: Config,
+    candle: Candle,
+    overview: MarketOverview,
+    watch_side: str,
+    watch_score: int,
+) -> str:
+    if watch_side == "LONG":
+        action_lines = [
+            "Setup almost ready, next candle confirm hole LONG signal aste pare",
+            "Support hold / breakout follow-through ache naki dekho",
+            "Fresh candle close-er age entry nio na",
+        ]
+    else:
+        action_lines = [
+            "Setup almost ready, next candle confirm hole SHORT signal aste pare",
+            "Resistance reject / breakdown follow-through ache naki dekho",
+            "Fresh candle close-er age entry nio na",
+        ]
+
+    action_text = "\n".join(f"- {line}" for line in action_lines)
+
+    return (
+        "SETUP WATCH ALERT\n\n"
+        f"Pair: {config.symbol}\n"
+        f"Timeframe: {config.interval}\n"
+        f"Time: {format_local_time(candle.open_time)}\n"
+        f"Current Price: {format_price(candle.close)}\n"
+        f"Watch Side: {watch_side}\n"
+        f"Watch Score: {watch_score}/{config.min_signal_score}\n"
+        f"Trend: {overview.trend}\n"
+        f"Zone: {overview.support_zone if watch_side == 'LONG' else overview.resistance_zone}\n"
+        f"Breakout: {overview.breakout_check}\n"
+        f"Momentum: {overview.volume_momentum}\n"
+        f"Verdict: {overview.entry_rule}\n\n"
+        f"What Now:\n{action_text}"
+    )
+
+
+def send_setup_watch_alert(
+    config: Config,
+    candle: Candle,
+    overview: MarketOverview,
+    long_score: int,
+    short_score: int,
+    interval_state: Dict[str, object],
+) -> bool:
+    if not config.watch_alert_enabled:
+        return False
+
+    watch_threshold = max(config.min_signal_score - config.watch_alert_score_gap, 58)
+    watch_side = ""
+    watch_score = 0
+
+    if long_score >= short_score:
+        watch_side = "LONG"
+        watch_score = long_score
+        is_aligned = (
+            overview.entry_rule.startswith("LONG")
+            or overview.bullish_rejection_valid
+            or overview.strong_bullish_candle
+        )
+    else:
+        watch_side = "SHORT"
+        watch_score = short_score
+        is_aligned = (
+            overview.entry_rule.startswith("SHORT")
+            or overview.bearish_rejection_valid
+            or overview.strong_bearish_candle
+        )
+
+    if watch_score < watch_threshold or not is_aligned:
+        return False
+
+    watch_key = f"{watch_side}:{candle.open_time}:{watch_score}"
+    if interval_state.get("last_watch_alert_key") == watch_key:
+        return False
+
+    send_telegram(
+        build_watch_alert_message(config, candle, overview, watch_side, watch_score),
+        config,
+    )
+    interval_state["last_watch_alert_key"] = watch_key
+    return True
 
 
 def send_market_condition_alerts(
@@ -2195,7 +2297,7 @@ def analyze_market(
     candles: List[Candle],
     config: Config,
     higher_timeframe_trend: Optional[TrendSnapshot] = None,
-) -> Optional[Signal]:
+) -> AnalysisResult:
     closes = [c.close for c in candles]
     minimum_required = minimum_required_candles(config)
     if len(candles) < minimum_required:
@@ -2233,7 +2335,12 @@ def analyze_market(
 
     if selected_signal:
         selected_signal.market_overview = build_market_overview_lines(market_overview)
-        return selected_signal
+        return AnalysisResult(
+            signal=selected_signal,
+            market_overview=market_overview,
+            long_score=long_score,
+            short_score=short_score,
+        )
 
     LOGGER.info(
         "No trade setup on %s %s. Long score=%s, Short score=%s",
@@ -2242,7 +2349,12 @@ def analyze_market(
         long_score,
         short_score,
     )
-    return None
+    return AnalysisResult(
+        signal=None,
+        market_overview=market_overview,
+        long_score=long_score,
+        short_score=short_score,
+    )
 
 
 def process_interval(
@@ -2294,9 +2406,10 @@ def process_interval(
 
     higher_timeframe_trend = fetch_confirmation_trend(base_config, interval)
 
-    signal = analyze_market(candles, interval_config, higher_timeframe_trend)
+    analysis = analyze_market(candles, interval_config, higher_timeframe_trend)
+    signal = analysis.signal
     if not signal:
-        market_overview = calculate_market_overview_for_candles(candles, interval_config)
+        market_overview = analysis.market_overview
         if send_market_condition_alerts(
             interval_config,
             candles[-1],
@@ -2308,6 +2421,21 @@ def process_interval(
                 interval_config.symbol,
                 interval,
                 market_overview.entry_rule,
+            )
+        if send_setup_watch_alert(
+            interval_config,
+            candles[-1],
+            market_overview,
+            analysis.long_score,
+            analysis.short_score,
+            working_interval_state,
+        ):
+            LOGGER.info(
+                "Setup watch alert sent on %s %s. Long score=%s, Short score=%s",
+                interval_config.symbol,
+                interval,
+                analysis.long_score,
+                analysis.short_score,
             )
         replace_state(interval_state, working_interval_state)
         return True
