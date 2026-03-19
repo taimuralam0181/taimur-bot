@@ -588,6 +588,21 @@ def get_performance_state(state: Dict[str, object]) -> Dict[str, object]:
         daily_state = {}
         performance_state["daily"] = daily_state
 
+    by_symbol_state = performance_state.setdefault("by_symbol", {})
+    if not isinstance(by_symbol_state, dict):
+        by_symbol_state = {}
+        performance_state["by_symbol"] = by_symbol_state
+
+    by_interval_state = performance_state.setdefault("by_interval", {})
+    if not isinstance(by_interval_state, dict):
+        by_interval_state = {}
+        performance_state["by_interval"] = by_interval_state
+
+    by_symbol_interval_state = performance_state.setdefault("by_symbol_interval", {})
+    if not isinstance(by_symbol_interval_state, dict):
+        by_symbol_interval_state = {}
+        performance_state["by_symbol_interval"] = by_symbol_interval_state
+
     performance_state.setdefault("last_daily_report_date", "")
     performance_state.setdefault("recent_closed", [])
     return performance_state
@@ -617,15 +632,27 @@ def get_stats_bucket(container: Dict[str, object], key: str) -> Dict[str, object
     return bucket
 
 
-def update_signal_stats(state: Dict[str, object], signal: Signal) -> None:
+def update_signal_stats(state: Dict[str, object], signal: Signal, config: Config) -> None:
     performance_state = get_performance_state(state)
     overall_stats = get_stats_bucket(performance_state, "overall")
     daily_stats = get_stats_bucket(
         performance_state["daily"],
         local_date_from_timestamp(signal.candle_time),
     )
+    symbol_stats = get_stats_bucket(performance_state["by_symbol"], config.symbol)
+    interval_stats = get_stats_bucket(performance_state["by_interval"], config.interval)
+    symbol_interval_stats = get_stats_bucket(
+        performance_state["by_symbol_interval"],
+        f"{config.symbol} {config.interval}",
+    )
 
-    for stats_bucket in (overall_stats, daily_stats):
+    for stats_bucket in (
+        overall_stats,
+        daily_stats,
+        symbol_stats,
+        interval_stats,
+        symbol_interval_stats,
+    ):
         stats_bucket["signals_sent"] = int(stats_bucket.get("signals_sent", 0)) + 1
         tier_key = "vip_signals" if signal.tier == "VIP" else "normal_signals"
         stats_bucket[tier_key] = int(stats_bucket.get(tier_key, 0)) + 1
@@ -678,11 +705,23 @@ def record_closed_trade(
         performance_state["daily"],
         local_date_from_timestamp(candle_time),
     )
+    symbol_stats = get_stats_bucket(performance_state["by_symbol"], config.symbol)
+    interval_stats = get_stats_bucket(performance_state["by_interval"], config.interval)
+    symbol_interval_stats = get_stats_bucket(
+        performance_state["by_symbol_interval"],
+        f"{config.symbol} {config.interval}",
+    )
     realized_r = float(trade.get("realized_r", 0.0) or 0.0)
     result_key = classify_trade_result(realized_r)
     tier_key = "vip_closed" if str(trade.get("tier")) == "VIP" else "normal_closed"
 
-    for stats_bucket in (overall_stats, daily_stats):
+    for stats_bucket in (
+        overall_stats,
+        daily_stats,
+        symbol_stats,
+        interval_stats,
+        symbol_interval_stats,
+    ):
         stats_bucket["closed_trades"] = int(stats_bucket.get("closed_trades", 0)) + 1
         stats_bucket[tier_key] = int(stats_bucket.get(tier_key, 0)) + 1
         stats_bucket[result_key] = int(stats_bucket.get(result_key, 0)) + 1
@@ -715,6 +754,81 @@ def calculate_win_rate(stats_bucket: Dict[str, object]) -> float:
 
     wins = int(stats_bucket.get("wins", 0) or 0)
     return (wins / closed_trades) * 100.0
+
+
+def format_accuracy_line(label: str, stats_bucket: Dict[str, object]) -> str:
+    return (
+        f"{label}: {calculate_win_rate(stats_bucket):.1f}% | "
+        f"closed {int(stats_bucket.get('closed_trades', 0))} | "
+        f"W/L/BE {int(stats_bucket.get('wins', 0))}/"
+        f"{int(stats_bucket.get('losses', 0))}/"
+        f"{int(stats_bucket.get('breakeven', 0))} | "
+        f"{format_r_multiple(float(stats_bucket.get('total_r', 0.0) or 0.0))}"
+    )
+
+
+def build_ranked_accuracy_lines(
+    container: Dict[str, object],
+    minimum_closed_trades: int = 1,
+) -> List[str]:
+    ranked_items: List[Tuple[str, Dict[str, object]]] = []
+
+    for key, value in container.items():
+        if not isinstance(value, dict):
+            continue
+        if int(value.get("closed_trades", 0) or 0) < minimum_closed_trades:
+            continue
+        ranked_items.append((key, value))
+
+    ranked_items.sort(
+        key=lambda item: (
+            -calculate_win_rate(item[1]),
+            -int(item[1].get("closed_trades", 0) or 0),
+            item[0],
+        )
+    )
+    return [format_accuracy_line(label, stats_bucket) for label, stats_bucket in ranked_items]
+
+
+def build_accuracy_message(state: Dict[str, object]) -> str:
+    performance_state = get_performance_state(state)
+    overall_stats = get_stats_bucket(performance_state, "overall")
+    symbol_lines = build_ranked_accuracy_lines(performance_state["by_symbol"])
+    interval_lines = build_ranked_accuracy_lines(performance_state["by_interval"])
+    symbol_interval_lines = build_ranked_accuracy_lines(
+        performance_state["by_symbol_interval"],
+        minimum_closed_trades=2,
+    )
+
+    message_parts = [
+        "REAL ACCURACY TRACKER",
+        "",
+        "Overall:",
+        format_accuracy_line("All setups", overall_stats),
+    ]
+
+    if symbol_lines:
+        message_parts.extend(["", "By Pair:"])
+        message_parts.extend(f"- {line}" for line in symbol_lines[:10])
+
+    if interval_lines:
+        message_parts.extend(["", "By Timeframe:"])
+        message_parts.extend(f"- {line}" for line in interval_lines[:10])
+
+    if symbol_interval_lines:
+        message_parts.extend(["", "Best Pair + Timeframe:"])
+        message_parts.extend(f"- {line}" for line in symbol_interval_lines[:10])
+
+    if not symbol_lines and not interval_lines:
+        message_parts.extend(
+            [
+                "",
+                "No closed trades yet.",
+                "Accuracy will become meaningful after some real closed signals.",
+            ]
+        )
+
+    return "\n".join(message_parts)
 
 
 def build_daily_report_message(config: Config, report_date: str, state: Dict[str, object]) -> str:
@@ -1594,7 +1708,7 @@ def process_interval(
 
     sent_time = format_now_local()
     send_telegram(format_signal_message(signal, interval_config, sent_time), interval_config)
-    update_signal_stats(root_state, signal)
+    update_signal_stats(root_state, signal, interval_config)
     working_interval_state["active_trade"] = build_active_trade(signal, sent_time)
     working_interval_state["last_signal_side"] = signal.side
     working_interval_state["last_signal_candle_time"] = signal.candle_time
@@ -1719,6 +1833,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         f"Alerts Chat ID: {config.telegram_chat_id or 'Not configured'}\n\n"
         "Commands:\n"
         "/status - live bot summary\n"
+        "/accuracy - real accuracy tracker\n"
         "/active - open mentor trades\n"
         "/report - today's performance report\n"
         "/scan - run a manual scan now\n"
@@ -1734,6 +1849,12 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     state: Dict[str, object] = context.application.bot_data["state"]
     if update.effective_message:
         await update.effective_message.reply_text(build_status_message(config, state))
+
+
+async def accuracy_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    state: Dict[str, object] = context.application.bot_data["state"]
+    if update.effective_message:
+        await update.effective_message.reply_text(build_accuracy_message(state))
 
 
 async def active_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1818,6 +1939,7 @@ def build_application(config: Config, state: Dict[str, object]) -> Application:
 
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("status", status_command))
+    application.add_handler(CommandHandler("accuracy", accuracy_command))
     application.add_handler(CommandHandler("active", active_command))
     application.add_handler(CommandHandler("report", report_command))
     application.add_handler(CommandHandler("scan", scan_command))
