@@ -798,9 +798,19 @@ def build_market_condition_alert_message(
     config: Config,
     title: str,
     candle_time: int,
+    current_price: float,
     overview: MarketOverview,
     focus_lines: List[str],
 ) -> str:
+    if overview.entry_rule == "NO TRADE":
+        status_line = "Watch Only - setup ekhono confirm hoyni"
+    elif overview.entry_rule.startswith("LONG"):
+        status_line = "Possible LONG setup"
+    elif overview.entry_rule.startswith("SHORT"):
+        status_line = "Possible SHORT setup"
+    else:
+        status_line = overview.entry_rule
+
     if overview.entry_zone_side == "SUPPORT":
         zone_line = overview.support_zone
     elif overview.entry_zone_side == "RESISTANCE":
@@ -815,8 +825,10 @@ def build_market_condition_alert_message(
         f"Pair: {config.symbol}\n"
         f"Timeframe: {config.interval}\n"
         f"Time: {format_local_time(candle_time)}\n"
+        f"Current Price: {format_price(current_price)}\n"
+        f"Status: {status_line}\n"
         f"Trend: {overview.trend}\n"
-        f"{zone_line}\n"
+        f"Zone: {zone_line}\n"
         f"Breakout: {overview.breakout_check}\n"
         f"Momentum: {overview.volume_momentum}\n"
         f"Verdict: {overview.entry_rule}\n\n"
@@ -840,11 +852,12 @@ def send_market_condition_alerts(
                 config,
                 "ENTRY ZONE ALERT",
                 candle.open_time,
+                candle.close,
                 overview,
                 [
-                    "Price entry zone-e esheche",
-                    "Ekhon candle confirmation wait koro",
-                    overview.entry_rule,
+                    "Price important zone-e esheche",
+                    "Ekhono entry nio na, candle confirmation wait koro",
+                    "Rejection candle ba strong breakout close hole next setup ashbe",
                 ],
             ),
             config,
@@ -860,17 +873,17 @@ def send_market_condition_alerts(
         rejection_key = f"bullish:{candle.open_time}"
         rejection_title = "BULLISH REJECTION ALERT"
         rejection_focus = [
-            "Support theke strong bullish rejection",
+            "Support theke strong bullish rejection peyechi",
             "Lower wick support defend koreche",
-            overview.entry_rule,
+            "Next candle follow-through thakle LONG setup stronger hobe",
         ]
     elif overview.bearish_rejection_valid:
         rejection_key = f"bearish:{candle.open_time}"
         rejection_title = "BEARISH REJECTION ALERT"
         rejection_focus = [
-            "Resistance theke strong bearish rejection",
+            "Resistance theke strong bearish rejection peyechi",
             "Upper wick resistance reject koreche",
-            overview.entry_rule,
+            "Next candle follow-through thakle SHORT setup stronger hobe",
         ]
 
     if rejection_key and interval_state.get("last_rejection_alert_key") != rejection_key:
@@ -879,6 +892,7 @@ def send_market_condition_alerts(
                 config,
                 rejection_title,
                 candle.open_time,
+                candle.close,
                 overview,
                 rejection_focus,
             ),
@@ -897,11 +911,12 @@ def send_market_condition_alerts(
                 config,
                 "STRONG BULLISH CANDLE ALERT",
                 candle.open_time,
+                candle.close,
                 overview,
                 [
                     "Strong bullish candle close hoyeche",
                     "Trend + volume + MACD bullish",
-                    overview.entry_rule,
+                    "Price follow-through korle LONG setup gorte pare",
                 ],
             ),
             config,
@@ -919,11 +934,12 @@ def send_market_condition_alerts(
                 config,
                 "STRONG BEARISH CANDLE ALERT",
                 candle.open_time,
+                candle.close,
                 overview,
                 [
                     "Strong bearish candle close hoyeche",
                     "Trend + volume + MACD bearish",
-                    overview.entry_rule,
+                    "Price follow-through korle SHORT setup gorte pare",
                 ],
             ),
             config,
