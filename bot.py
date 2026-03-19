@@ -2517,6 +2517,68 @@ def build_active_trades_message(state: Dict[str, object]) -> str:
     return "Active Trades\n\n" + "\n\n".join(sections)
 
 
+def classify_signal_checker_result(
+    analysis: AnalysisResult,
+    config: Config,
+) -> Tuple[str, int, str, str]:
+    if analysis.long_score > analysis.short_score:
+        best_side = "LONG"
+        best_score = analysis.long_score
+    elif analysis.short_score > analysis.long_score:
+        best_side = "SHORT"
+        best_score = analysis.short_score
+    else:
+        best_side = "WAIT"
+        best_score = analysis.long_score
+
+    watch_threshold = max(config.min_signal_score - config.watch_alert_score_gap, 54)
+
+    if analysis.signal:
+        quality = "GOOD"
+        note = f"{analysis.signal.tier} {analysis.signal.grade}"
+    elif best_score >= watch_threshold:
+        quality = "WATCH"
+        note = "Almost ready"
+    else:
+        quality = "BAD"
+        note = "No clean setup"
+
+    return best_side, best_score, quality, note
+
+
+def build_signal_checker_message(config: Config) -> str:
+    lines = [
+        "SIGNAL CHECKER",
+        "",
+        f"Checked At: {format_now_local()}",
+        "GOOD = tradable signal | WATCH = near setup | BAD = no clean setup",
+        "",
+    ]
+
+    for symbol in config.symbols:
+        symbol_config = config_for_symbol(config, symbol)
+        lines.append(symbol)
+
+        for interval in config.intervals:
+            interval_config = config_for_interval(symbol_config, interval)
+            candles = fetch_klines(interval_config)
+            higher_timeframe_trend = fetch_confirmation_trend(symbol_config, interval)
+            analysis = analyze_market(candles, interval_config, higher_timeframe_trend)
+            best_side, best_score, quality, note = classify_signal_checker_result(
+                analysis,
+                interval_config,
+            )
+
+            lines.append(
+                f"- {interval}: LONG {analysis.long_score} | SHORT {analysis.short_score} | "
+                f"Best {best_side} {best_score} | {quality} | {note}"
+            )
+
+        lines.append("")
+
+    return "\n".join(lines).rstrip()
+
+
 def build_status_message(config: Config, state: Dict[str, object]) -> str:
     performance_state = get_performance_state(state)
     overall_stats = get_stats_bucket(performance_state, "overall")
@@ -2591,6 +2653,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         f"Alerts Chat ID: {config.telegram_chat_id or 'Not configured'}\n\n"
         "Commands:\n"
         "/status - live bot summary\n"
+        "/checksignal - score check, good or bad\n"
         "/market - current market condition\n"
         "/accuracy - real accuracy tracker\n"
         "/active - open mentor trades\n"
@@ -2608,6 +2671,28 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     state: Dict[str, object] = context.application.bot_data["state"]
     if update.effective_message:
         await update.effective_message.reply_text(build_status_message(config, state))
+
+
+async def checksignal_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    config: Config = context.application.bot_data["config"]
+    if update.effective_message:
+        await update.effective_message.reply_text("Checking live signal quality...")
+
+    try:
+        message = await asyncio.to_thread(build_signal_checker_message, config)
+    except requests.RequestException as exc:
+        LOGGER.warning("Signal checker failed due to network/API error: %s", exc)
+        if update.effective_message:
+            await update.effective_message.reply_text(f"Signal checker failed: {exc}")
+        return
+    except Exception as exc:
+        LOGGER.exception("Signal checker crashed: %s", exc)
+        if update.effective_message:
+            await update.effective_message.reply_text(f"Signal checker crashed: {exc}")
+        return
+
+    if update.effective_message:
+        await update.effective_message.reply_text(message)
 
 
 async def market_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2729,6 +2814,7 @@ def build_application(config: Config, state: Dict[str, object]) -> Application:
 
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("status", status_command))
+    application.add_handler(CommandHandler("checksignal", checksignal_command))
     application.add_handler(CommandHandler("market", market_command))
     application.add_handler(CommandHandler("accuracy", accuracy_command))
     application.add_handler(CommandHandler("active", active_command))
