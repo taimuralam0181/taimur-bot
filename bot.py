@@ -71,6 +71,9 @@ class Config:
     tp_one_r: float
     tp_two_r: float
     tp_three_r: float
+    hourly_update_enabled: bool
+    hourly_update_interval_minutes: int
+    hourly_update_timeframe: str
     daily_report_hour: int
     state_file: Path
 
@@ -237,6 +240,9 @@ def load_config() -> Config:
         tp_one_r=float(os.getenv("BOT_TP1_R", "1.5")),
         tp_two_r=float(os.getenv("BOT_TP2_R", "2.5")),
         tp_three_r=float(os.getenv("BOT_TP3_R", "4.0")),
+        hourly_update_enabled=parse_bool_env("BOT_HOURLY_UPDATE_ENABLED", True),
+        hourly_update_interval_minutes=int(os.getenv("BOT_HOURLY_UPDATE_MINUTES", "60")),
+        hourly_update_timeframe=os.getenv("BOT_HOURLY_UPDATE_TIMEFRAME", "1h").strip() or "1h",
         daily_report_hour=int(os.getenv("BOT_DAILY_REPORT_HOUR", "23")),
         state_file=Path(os.getenv("BOT_STATE_FILE", str(STATE_FILE))).expanduser(),
     )
@@ -373,6 +379,9 @@ def config_for_interval(config: Config, interval: str) -> Config:
         tp_one_r=config.tp_one_r,
         tp_two_r=config.tp_two_r,
         tp_three_r=config.tp_three_r,
+        hourly_update_enabled=config.hourly_update_enabled,
+        hourly_update_interval_minutes=config.hourly_update_interval_minutes,
+        hourly_update_timeframe=config.hourly_update_timeframe,
         daily_report_hour=config.daily_report_hour,
         state_file=config.state_file,
     )
@@ -410,6 +419,9 @@ def config_for_symbol(config: Config, symbol: str) -> Config:
         tp_one_r=config.tp_one_r,
         tp_two_r=config.tp_two_r,
         tp_three_r=config.tp_three_r,
+        hourly_update_enabled=config.hourly_update_enabled,
+        hourly_update_interval_minutes=config.hourly_update_interval_minutes,
+        hourly_update_timeframe=config.hourly_update_timeframe,
         daily_report_hour=config.daily_report_hour,
         state_file=config.state_file,
     )
@@ -977,6 +989,7 @@ def get_performance_state(state: Dict[str, object]) -> Dict[str, object]:
         performance_state["by_symbol_interval"] = by_symbol_interval_state
 
     performance_state.setdefault("last_daily_report_date", "")
+    performance_state.setdefault("last_hourly_update_key", "")
     performance_state.setdefault("recent_closed", [])
     return performance_state
 
@@ -1252,6 +1265,24 @@ def maybe_send_daily_report(config: Config, state: Dict[str, object]) -> bool:
 
     send_telegram(build_daily_report_message(config, report_date, state), config)
     performance_state["last_daily_report_date"] = report_date
+    return True
+
+
+def maybe_send_hourly_update(config: Config, state: Dict[str, object]) -> bool:
+    if not config.hourly_update_enabled:
+        return False
+
+    performance_state = get_performance_state(state)
+    now = datetime.now().astimezone()
+    minute_bucket = max(config.hourly_update_interval_minutes, 1)
+    bucket_start = (now.minute // minute_bucket) * minute_bucket
+    update_key = now.strftime("%Y-%m-%d %H") + f":{bucket_start:02d}"
+
+    if str(performance_state.get("last_hourly_update_key", "")) == update_key:
+        return False
+
+    send_telegram(build_hourly_update_message(config), config)
+    performance_state["last_hourly_update_key"] = update_key
     return True
 
 
@@ -2032,6 +2063,42 @@ def build_market_message(config: Config) -> str:
     )
 
 
+def build_hourly_update_message(config: Config) -> str:
+    lines = [
+        "HOURLY MARKET UPDATE",
+        "",
+        f"Update Time: {format_now_local()}",
+        f"Timeframe: {config.hourly_update_timeframe}",
+        f"Watchlist: {', '.join(config.symbols)}",
+        "",
+        "Real signal thakle alada signal message jabe.",
+        "Na thakle ei update diye current market bias bujhte parba.",
+        "",
+    ]
+
+    for symbol in config.symbols:
+        symbol_config = config_for_symbol(config, symbol)
+        interval_config = config_for_interval(symbol_config, config.hourly_update_timeframe)
+        candles = fetch_klines(interval_config)
+        overview = calculate_market_overview_for_candles(candles, interval_config)
+        last = candles[-1]
+
+        lines.extend(
+            [
+                f"{symbol}",
+                f"- Price: {format_price(last.close)}",
+                f"- Trend: {overview.trend}",
+                f"- Verdict: {overview.entry_rule}",
+                f"- Entry Zone: {overview.entry_condition}",
+                f"- Breakout: {overview.breakout_check}",
+                f"- Momentum: {overview.volume_momentum}",
+                "",
+            ]
+        )
+
+    return "\n".join(lines).rstrip()
+
+
 def build_demo_message(config: Config) -> str:
     try:
         candles = fetch_klines(config)
@@ -2328,6 +2395,8 @@ def build_status_message(config: Config, state: Dict[str, object]) -> str:
         f"Symbols: {', '.join(config.symbols)}\n"
         f"Intervals: {', '.join(config.intervals)}\n"
         f"Poll Seconds: {config.poll_seconds}\n"
+        f"Hourly Update: {'ON' if config.hourly_update_enabled else 'OFF'} "
+        f"({config.hourly_update_interval_minutes}m, {config.hourly_update_timeframe})\n"
         f"Alerts Chat ID: {config.telegram_chat_id or 'Not configured'}\n"
         f"Active Trades: {active_trade_count}\n"
         f"Signals Sent: {int(overall_stats.get('signals_sent', 0))}\n"
@@ -2354,6 +2423,17 @@ def scan_markets_once(config: Config, state: Dict[str, object]) -> None:
                 LOGGER.exception("Bot loop failed on %s %s: %s", symbol, interval, exc)
 
     try:
+        if maybe_send_hourly_update(config, state):
+            LOGGER.info(
+                "Hourly market update sent for %s on %s.",
+                ", ".join(config.symbols),
+                config.hourly_update_timeframe,
+            )
+            state_changed = True
+    except requests.RequestException as exc:
+        LOGGER.warning("Hourly update send failed: %s", exc)
+
+    try:
         if maybe_send_daily_report(config, state):
             LOGGER.info("Daily performance report sent for %s.", current_local_date())
             state_changed = True
@@ -2374,6 +2454,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         f"Symbols: {', '.join(config.symbols)}\n"
         f"Intervals: {', '.join(config.intervals)}\n"
         f"Poll Seconds: {config.poll_seconds}\n"
+        f"Hourly Update: {'ON' if config.hourly_update_enabled else 'OFF'} "
+        f"({config.hourly_update_interval_minutes}m, {config.hourly_update_timeframe})\n"
         f"Alerts Chat ID: {config.telegram_chat_id or 'Not configured'}\n\n"
         "Commands:\n"
         "/status - live bot summary\n"
