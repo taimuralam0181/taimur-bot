@@ -235,8 +235,8 @@ def load_config() -> Config:
         volume_spike_factor=float(os.getenv("BOT_VOLUME_SPIKE_FACTOR", "1.02")),
         breakout_buffer_pct=float(os.getenv("BOT_BREAKOUT_BUFFER_PCT", "0.0006")),
         cooldown_candles=int(os.getenv("BOT_COOLDOWN_CANDLES", "2")),
-        min_signal_score=int(os.getenv("BOT_MIN_SIGNAL_SCORE", "66")),
-        vip_signal_score=int(os.getenv("BOT_VIP_SIGNAL_SCORE", "78")),
+        min_signal_score=int(os.getenv("BOT_MIN_SIGNAL_SCORE", "64")),
+        vip_signal_score=int(os.getenv("BOT_VIP_SIGNAL_SCORE", "76")),
         normal_risk_pct=float(os.getenv("BOT_NORMAL_RISK_PCT", "0.5")),
         vip_risk_pct=float(os.getenv("BOT_VIP_RISK_PCT", "0.8")),
         normal_leverage=os.getenv("BOT_NORMAL_LEVERAGE", "3x-5x").strip(),
@@ -246,7 +246,7 @@ def load_config() -> Config:
             "BOT_REQUIRE_HTF_CONFIRMATION", False
         ),
         watch_alert_enabled=parse_bool_env("BOT_WATCH_ALERT_ENABLED", True),
-        watch_alert_score_gap=int(os.getenv("BOT_WATCH_ALERT_SCORE_GAP", "6")),
+        watch_alert_score_gap=int(os.getenv("BOT_WATCH_ALERT_SCORE_GAP", "10")),
         max_extension_atr=float(os.getenv("BOT_MAX_EXTENSION_ATR", "2.3")),
         atr_stop_multiplier=float(os.getenv("BOT_ATR_STOP_MULTIPLIER", "1.2")),
         tp_one_r=float(os.getenv("BOT_TP1_R", "1.5")),
@@ -254,7 +254,7 @@ def load_config() -> Config:
         tp_three_r=float(os.getenv("BOT_TP3_R", "4.0")),
         hourly_update_enabled=parse_bool_env("BOT_HOURLY_UPDATE_ENABLED", True),
         hourly_update_interval_minutes=int(os.getenv("BOT_HOURLY_UPDATE_MINUTES", "60")),
-        hourly_update_timeframe=os.getenv("BOT_HOURLY_UPDATE_TIMEFRAME", "1h").strip() or "1h",
+        hourly_update_timeframe=os.getenv("BOT_HOURLY_UPDATE_TIMEFRAME", "15m").strip() or "15m",
         daily_report_hour=int(os.getenv("BOT_DAILY_REPORT_HOUR", "23")),
         state_file=Path(os.getenv("BOT_STATE_FILE", str(STATE_FILE))).expanduser(),
     )
@@ -914,7 +914,7 @@ def send_setup_watch_alert(
     if not config.watch_alert_enabled:
         return False
 
-    watch_threshold = max(config.min_signal_score - config.watch_alert_score_gap, 58)
+    watch_threshold = max(config.min_signal_score - config.watch_alert_score_gap, 54)
     watch_side = ""
     watch_score = 0
 
@@ -925,6 +925,8 @@ def send_setup_watch_alert(
             overview.entry_rule.startswith("LONG")
             or overview.bullish_rejection_valid
             or overview.strong_bullish_candle
+            or (overview.entry_zone_side == "SUPPORT" and overview.trend_bias == "Bullish")
+            or ("Real breakout" in overview.breakout_check and overview.trend_bias == "Bullish")
         )
     else:
         watch_side = "SHORT"
@@ -933,6 +935,8 @@ def send_setup_watch_alert(
             overview.entry_rule.startswith("SHORT")
             or overview.bearish_rejection_valid
             or overview.strong_bearish_candle
+            or (overview.entry_zone_side == "RESISTANCE" and overview.trend_bias == "Bearish")
+            or ("Real breakout" in overview.breakout_check and overview.trend_bias == "Bearish")
         )
 
     if watch_score < watch_threshold or not is_aligned:
