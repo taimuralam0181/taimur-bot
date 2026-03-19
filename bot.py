@@ -14,7 +14,13 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 
 
 LOGGER = logging.getLogger("pro_trader_bot")
-BINANCE_BASE_URL = "https://api.binance.com/api/v3/klines"
+DEFAULT_MARKET_DATA_URLS = [
+    "https://data-api.binance.vision/api/v3/klines",
+    "https://api.binance.com/api/v3/klines",
+    "https://api1.binance.com/api/v3/klines",
+    "https://api2.binance.com/api/v3/klines",
+    "https://api3.binance.com/api/v3/klines",
+]
 STATE_FILE = Path("bot_state.json")
 TP1_PARTIAL_PCT = 40
 TP2_PARTIAL_PCT = 30
@@ -23,11 +29,12 @@ RESULT_EPSILON_R = 0.05
 DEFAULT_SYMBOLS = [
     "ZECUSDT",
     "ETHUSDT",
+    "BTCUSDT",
 ]
 DEFAULT_INTERVALS = [
+    "3m",
     "5m",
     "15m",
-    "1h",
 ]
 
 
@@ -149,6 +156,21 @@ def parse_bool_env(name: str, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def market_data_urls() -> List[str]:
+    configured_urls = os.getenv("BOT_MARKET_DATA_URLS", "").strip()
+    if configured_urls:
+        raw_urls = [item.strip() for item in configured_urls.split(",") if item.strip()]
+    else:
+        raw_urls = DEFAULT_MARKET_DATA_URLS
+
+    deduplicated: List[str] = []
+    for url in raw_urls:
+        if url not in deduplicated:
+            deduplicated.append(url)
+
+    return deduplicated
+
+
 def load_config() -> Config:
     token = os.getenv("BOT_TOKEN", "").strip()
     chat_id = os.getenv("CHAT_ID", "").strip()
@@ -174,20 +196,20 @@ def load_config() -> Config:
         atr_period=int(os.getenv("BOT_ATR_PERIOD", "14")),
         sr_lookback=int(os.getenv("BOT_SR_LOOKBACK", "20")),
         volume_period=int(os.getenv("BOT_VOLUME_PERIOD", "20")),
-        volume_spike_factor=float(os.getenv("BOT_VOLUME_SPIKE_FACTOR", "1.2")),
-        breakout_buffer_pct=float(os.getenv("BOT_BREAKOUT_BUFFER_PCT", "0.0012")),
-        cooldown_candles=int(os.getenv("BOT_COOLDOWN_CANDLES", "3")),
-        min_signal_score=int(os.getenv("BOT_MIN_SIGNAL_SCORE", "78")),
-        vip_signal_score=int(os.getenv("BOT_VIP_SIGNAL_SCORE", "88")),
+        volume_spike_factor=float(os.getenv("BOT_VOLUME_SPIKE_FACTOR", "1.05")),
+        breakout_buffer_pct=float(os.getenv("BOT_BREAKOUT_BUFFER_PCT", "0.0008")),
+        cooldown_candles=int(os.getenv("BOT_COOLDOWN_CANDLES", "2")),
+        min_signal_score=int(os.getenv("BOT_MIN_SIGNAL_SCORE", "72")),
+        vip_signal_score=int(os.getenv("BOT_VIP_SIGNAL_SCORE", "84")),
         normal_risk_pct=float(os.getenv("BOT_NORMAL_RISK_PCT", "0.5")),
         vip_risk_pct=float(os.getenv("BOT_VIP_RISK_PCT", "0.8")),
         normal_leverage=os.getenv("BOT_NORMAL_LEVERAGE", "3x-5x").strip(),
         vip_leverage=os.getenv("BOT_VIP_LEVERAGE", "5x-8x").strip(),
         margin_mode=os.getenv("BOT_MARGIN_MODE", "Isolated").strip() or "Isolated",
         require_higher_timeframe_confirmation=parse_bool_env(
-            "BOT_REQUIRE_HTF_CONFIRMATION", True
+            "BOT_REQUIRE_HTF_CONFIRMATION", False
         ),
-        max_extension_atr=float(os.getenv("BOT_MAX_EXTENSION_ATR", "1.8")),
+        max_extension_atr=float(os.getenv("BOT_MAX_EXTENSION_ATR", "2.1")),
         atr_stop_multiplier=float(os.getenv("BOT_ATR_STOP_MULTIPLIER", "1.2")),
         tp_one_r=float(os.getenv("BOT_TP1_R", "1.5")),
         tp_two_r=float(os.getenv("BOT_TP2_R", "2.5")),
@@ -363,36 +385,64 @@ def config_for_symbol(config: Config, symbol: str) -> Config:
 
 
 def fetch_klines(config: Config) -> List[Candle]:
-    response = requests.get(
-        BINANCE_BASE_URL,
-        params={
-            "symbol": config.symbol,
-            "interval": config.interval,
-            "limit": config.lookback_limit,
-        },
-        timeout=15,
-    )
-    response.raise_for_status()
-    raw = response.json()
+    last_error: Optional[Exception] = None
 
-    candles = [
-        Candle(
-            open_time=int(row[0]),
-            open=float(row[1]),
-            high=float(row[2]),
-            low=float(row[3]),
-            close=float(row[4]),
-            volume=float(row[5]),
-            close_time=int(row[6]),
-        )
-        for row in raw
-    ]
+    for market_url in market_data_urls():
+        try:
+            response = requests.get(
+                market_url,
+                params={
+                    "symbol": config.symbol,
+                    "interval": config.interval,
+                    "limit": config.lookback_limit,
+                },
+                timeout=15,
+            )
+            response.raise_for_status()
+            raw = response.json()
 
-    if len(candles) < 3:
-        raise ValueError("Not enough market data returned from Binance.")
+            candles = [
+                Candle(
+                    open_time=int(row[0]),
+                    open=float(row[1]),
+                    high=float(row[2]),
+                    low=float(row[3]),
+                    close=float(row[4]),
+                    volume=float(row[5]),
+                    close_time=int(row[6]),
+                )
+                for row in raw
+            ]
 
-    # Binance may include the currently-forming candle as the last item.
-    return candles[:-1]
+            if len(candles) < 3:
+                raise ValueError("Not enough market data returned from Binance.")
+
+            # Binance may include the currently-forming candle as the last item.
+            return candles[:-1]
+        except requests.HTTPError as exc:
+            status_code = exc.response.status_code if exc.response is not None else "unknown"
+            LOGGER.warning(
+                "Market data endpoint failed for %s %s on %s with status %s.",
+                config.symbol,
+                config.interval,
+                market_url,
+                status_code,
+            )
+            last_error = exc
+        except requests.RequestException as exc:
+            LOGGER.warning(
+                "Market data request failed for %s %s on %s: %s",
+                config.symbol,
+                config.interval,
+                market_url,
+                exc,
+            )
+            last_error = exc
+
+    if last_error:
+        raise last_error
+
+    raise RuntimeError("No market data endpoint is configured.")
 
 
 def calculate_ema(values: List[float], period: int) -> List[float]:
@@ -1206,9 +1256,9 @@ def evaluate_long_setup(
     breakout = last.close > resistance * (1 + config.breakout_buffer_pct)
     retest_hold = last.low <= resistance * (1 + config.breakout_buffer_pct) and last.close > resistance
     volume_spike = last.volume >= avg_volume * config.volume_spike_factor
-    rsi_ok = 55 <= rsi_values[-1] <= 70
-    bullish_body = last.close > last.open and (body_size / candle_range) >= 0.55
-    close_near_high = (last.high - last.close) <= candle_range * 0.35
+    rsi_ok = 50 <= rsi_values[-1] <= 72
+    bullish_body = last.close > last.open and (body_size / candle_range) >= 0.45
+    close_near_high = (last.high - last.close) <= candle_range * 0.45
     not_overextended = extension_atr <= config.max_extension_atr
 
     if htf_confirmed:
@@ -1239,7 +1289,7 @@ def evaluate_long_setup(
         score += 10
         reasons.append("Price is not overextended from EMA50")
 
-    mandatory_checks = [trend_up, breakout, rsi_ok, bullish_body, close_near_high, not_overextended]
+    mandatory_checks = [trend_up, breakout, bullish_body, not_overextended]
     if config.require_higher_timeframe_confirmation and confirmation_interval(config.interval):
         mandatory_checks.append(htf_confirmed)
 
@@ -1292,9 +1342,9 @@ def evaluate_short_setup(
     breakdown = last.close < support * (1 - config.breakout_buffer_pct)
     retest_fail = last.high >= support * (1 - config.breakout_buffer_pct) and last.close < support
     volume_spike = last.volume >= avg_volume * config.volume_spike_factor
-    rsi_ok = 30 <= rsi_values[-1] <= 45
-    bearish_body = last.close < last.open and (body_size / candle_range) >= 0.55
-    close_near_low = (last.close - last.low) <= candle_range * 0.35
+    rsi_ok = 28 <= rsi_values[-1] <= 50
+    bearish_body = last.close < last.open and (body_size / candle_range) >= 0.45
+    close_near_low = (last.close - last.low) <= candle_range * 0.45
     not_overextended = extension_atr <= config.max_extension_atr
 
     if htf_confirmed:
@@ -1325,7 +1375,7 @@ def evaluate_short_setup(
         score += 10
         reasons.append("Price is not overextended from EMA50")
 
-    mandatory_checks = [trend_down, breakdown, rsi_ok, bearish_body, close_near_low, not_overextended]
+    mandatory_checks = [trend_down, breakdown, bearish_body, not_overextended]
     if config.require_higher_timeframe_confirmation and confirmation_interval(config.interval):
         mandatory_checks.append(htf_confirmed)
 
