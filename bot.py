@@ -130,6 +130,7 @@ class MarketOverview:
     bullish_rejection_valid: bool
     bearish_rejection_valid: bool
     strong_bullish_candle: bool
+    strong_bearish_candle: bool
 
 
 def parse_intervals() -> List[str]:
@@ -723,6 +724,14 @@ def build_market_overview(
         and volume_ratio >= 1.0
         and macd_state == "MACD bullish"
     )
+    strong_bearish_candle = (
+        trend == "Bearish"
+        and last.close < last.open
+        and body_ratio >= 0.6
+        and (last.close - last.low) <= candle_range * 0.25
+        and volume_ratio >= 1.0
+        and macd_state == "MACD bearish"
+    )
 
     if trend == "Bullish" and close_near_support and bullish_rejection:
         entry_rule = "LONG: support + bullish rejection"
@@ -752,6 +761,7 @@ def build_market_overview(
         bullish_rejection_valid=close_near_support and bullish_rejection,
         bearish_rejection_valid=close_near_resistance and bearish_rejection,
         strong_bullish_candle=strong_bullish_candle,
+        strong_bearish_candle=strong_bearish_candle,
     )
 
 
@@ -791,16 +801,26 @@ def build_market_condition_alert_message(
     overview: MarketOverview,
     focus_lines: List[str],
 ) -> str:
-    market_lines = "\n".join(f"- {line}" for line in build_market_overview_lines(overview))
-    action_lines = "\n".join(f"- {line}" for line in focus_lines)
+    if overview.entry_zone_side == "SUPPORT":
+        zone_line = overview.support_zone
+    elif overview.entry_zone_side == "RESISTANCE":
+        zone_line = overview.resistance_zone
+    else:
+        zone_line = "Entry Zone: Outside zone"
+
+    action_lines = "\n".join(f"- {line}" for line in focus_lines[:3])
 
     return (
         f"{title}\n\n"
         f"Pair: {config.symbol}\n"
         f"Timeframe: {config.interval}\n"
-        f"Candle Time: {format_local_time(candle_time)}\n\n"
-        f"Market Condition:\n{market_lines}\n\n"
-        f"Alert Focus:\n{action_lines}"
+        f"Time: {format_local_time(candle_time)}\n"
+        f"Trend: {overview.trend}\n"
+        f"{zone_line}\n"
+        f"Breakout: {overview.breakout_check}\n"
+        f"Momentum: {overview.volume_momentum}\n"
+        f"Verdict: {overview.entry_rule}\n\n"
+        f"What Now:\n{action_lines}"
     )
 
 
@@ -822,9 +842,9 @@ def send_market_condition_alerts(
                 candle.open_time,
                 overview,
                 [
-                    "Price has moved into the active entry zone",
-                    "Wait for a clean rejection or breakout confirmation",
-                    f"Current verdict: {overview.entry_rule}",
+                    "Price entry zone-e esheche",
+                    "Ekhon candle confirmation wait koro",
+                    overview.entry_rule,
                 ],
             ),
             config,
@@ -834,27 +854,30 @@ def send_market_condition_alerts(
     interval_state["last_entry_zone_state"] = current_entry_zone
 
     rejection_key = ""
+    rejection_title = "REJECTION CANDLE ALERT"
     rejection_focus: List[str] = []
     if overview.bullish_rejection_valid:
         rejection_key = f"bullish:{candle.open_time}"
+        rejection_title = "BULLISH REJECTION ALERT"
         rejection_focus = [
-            "Strong bullish rejection candle detected at support",
-            "Lower wick defended the support zone",
-            f"Current verdict: {overview.entry_rule}",
+            "Support theke strong bullish rejection",
+            "Lower wick support defend koreche",
+            overview.entry_rule,
         ]
     elif overview.bearish_rejection_valid:
         rejection_key = f"bearish:{candle.open_time}"
+        rejection_title = "BEARISH REJECTION ALERT"
         rejection_focus = [
-            "Strong bearish rejection candle detected at resistance",
-            "Upper wick rejected the resistance zone",
-            f"Current verdict: {overview.entry_rule}",
+            "Resistance theke strong bearish rejection",
+            "Upper wick resistance reject koreche",
+            overview.entry_rule,
         ]
 
     if rejection_key and interval_state.get("last_rejection_alert_key") != rejection_key:
         send_telegram(
             build_market_condition_alert_message(
                 config,
-                "REJECTION CANDLE ALERT",
+                rejection_title,
                 candle.open_time,
                 overview,
                 rejection_focus,
@@ -876,14 +899,36 @@ def send_market_condition_alerts(
                 candle.open_time,
                 overview,
                 [
-                    "Strong bullish candle confirmed with trend support",
-                    "Body strength, close position, volume, and MACD are aligned",
-                    f"Current verdict: {overview.entry_rule}",
+                    "Strong bullish candle close hoyeche",
+                    "Trend + volume + MACD bullish",
+                    overview.entry_rule,
                 ],
             ),
             config,
         )
         interval_state["last_strong_bullish_alert_key"] = bullish_candle_key
+        state_changed = True
+
+    bearish_candle_key = f"bearish-candle:{candle.open_time}"
+    if (
+        overview.strong_bearish_candle
+        and interval_state.get("last_strong_bearish_alert_key") != bearish_candle_key
+    ):
+        send_telegram(
+            build_market_condition_alert_message(
+                config,
+                "STRONG BEARISH CANDLE ALERT",
+                candle.open_time,
+                overview,
+                [
+                    "Strong bearish candle close hoyeche",
+                    "Trend + volume + MACD bearish",
+                    overview.entry_rule,
+                ],
+            ),
+            config,
+        )
+        interval_state["last_strong_bearish_alert_key"] = bearish_candle_key
         state_changed = True
 
     return state_changed
