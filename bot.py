@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import json
 import logging
 import os
@@ -32,9 +33,9 @@ DEFAULT_SYMBOLS = [
     "BTCUSDT",
 ]
 DEFAULT_INTERVALS = [
-    "3m",
-    "5m",
     "15m",
+    "1h",
+    "4h",
 ]
 
 
@@ -238,7 +239,15 @@ def load_state(path: Path) -> Dict[str, object]:
 
 
 def save_state(path: Path, state: Dict[str, object]) -> None:
-    path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_suffix(f"{path.suffix}.tmp")
+    temp_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    temp_path.replace(path)
+
+
+def replace_state(target: Dict[str, object], source: Dict[str, object]) -> None:
+    target.clear()
+    target.update(source)
 
 
 def get_symbol_state(state: Dict[str, object], symbol: str) -> Dict[str, object]:
@@ -857,44 +866,67 @@ def manage_active_trade(
     root_state: Dict[str, object],
     config: Config,
 ) -> bool:
-    trade = interval_state.get("active_trade")
-    if not isinstance(trade, dict):
+    active_trade = interval_state.get("active_trade")
+    if not isinstance(active_trade, dict):
         return False
 
+    trade = copy.deepcopy(active_trade)
     last = candles[-1]
     closes = [c.close for c in candles]
     ema_fast = calculate_ema(closes, config.ema_fast_period)
-    current_stop = float(trade.get("current_stop_loss", trade["stop_loss"]))
     tp1 = float(trade["take_profits"][0])
     tp2 = float(trade["take_profits"][1])
     tp3 = float(trade["take_profits"][2])
     side = str(trade["side"])
 
-    if side == "LONG":
-        if last.low <= current_stop:
-            book_trade_realization(trade, float(trade.get("remaining_position_pct", 0.0) or 0.0), current_stop)
-            send_telegram(
-                format_trade_update_message(
-                    config,
-                    trade,
-                    "CLOSE SIGNAL",
-                    "Stop loss level touched. Close the remaining position now.",
-                    ["Close full remaining position", "Wait for the next fresh setup"],
-                    last.open_time,
-                    last.close,
-                ),
+    def persist_open_trade() -> None:
+        interval_state["active_trade"] = copy.deepcopy(trade)
+
+    def close_trade(
+        title: str,
+        reason: str,
+        action_lines: List[str],
+        exit_price: float,
+        close_reason: str,
+    ) -> bool:
+        book_trade_realization(
+            trade,
+            float(trade.get("remaining_position_pct", 0.0) or 0.0),
+            exit_price,
+        )
+        send_telegram(
+            format_trade_update_message(
                 config,
-            )
-            record_closed_trade(
-                root_state,
                 trade,
-                config,
-                current_stop,
+                title,
+                reason,
+                action_lines,
                 last.open_time,
+                last.close,
+            ),
+            config,
+        )
+        record_closed_trade(
+            root_state,
+            trade,
+            config,
+            exit_price,
+            last.open_time,
+            close_reason,
+        )
+        interval_state.pop("active_trade", None)
+        return True
+
+    if side == "LONG":
+        current_stop = float(trade.get("current_stop_loss", trade["stop_loss"]))
+        if last.low <= current_stop:
+            return close_trade(
+                "CLOSE SIGNAL",
+                "Stop loss level touched. Close the remaining position now.",
+                ["Close full remaining position", "Wait for the next fresh setup"],
+                current_stop,
                 "Stop loss touched",
             )
-            interval_state.pop("active_trade", None)
-            return True
 
         if not bool(trade.get("tp1_hit")) and last.high >= tp1:
             trade["tp1_hit"] = True
@@ -915,6 +947,7 @@ def manage_active_trade(
                 ),
                 config,
             )
+            persist_open_trade()
 
         if bool(trade.get("tp1_hit")) and not bool(trade.get("tp2_hit")) and last.high >= tp2:
             trade["tp2_hit"] = True
@@ -935,86 +968,36 @@ def manage_active_trade(
                 ),
                 config,
             )
+            persist_open_trade()
 
         if last.high >= tp3:
-            book_trade_realization(trade, float(trade.get("remaining_position_pct", 0.0) or 0.0), tp3)
-            send_telegram(
-                format_trade_update_message(
-                    config,
-                    trade,
-                    "CLOSE SIGNAL: TP3 HIT",
-                    "Final target reached.",
-                    [f"Close the remaining {TP3_PARTIAL_PCT}% position now"],
-                    last.open_time,
-                    last.close,
-                ),
-                config,
-            )
-            record_closed_trade(
-                root_state,
-                trade,
-                config,
+            return close_trade(
+                "CLOSE SIGNAL: TP3 HIT",
+                "Final target reached.",
+                [f"Close the remaining {TP3_PARTIAL_PCT}% position now"],
                 tp3,
-                last.open_time,
                 "TP3 reached",
             )
-            interval_state.pop("active_trade", None)
-            return True
 
         if bool(trade.get("tp1_hit")) and last.close < ema_fast[-1] and last.close < last.open:
-            book_trade_realization(
-                trade,
-                float(trade.get("remaining_position_pct", 0.0) or 0.0),
+            return close_trade(
+                "CLOSE SIGNAL",
+                "Momentum weakened below EMA50 after entry.",
+                ["Close the remaining position", "Protect booked profit"],
                 last.close,
-            )
-            send_telegram(
-                format_trade_update_message(
-                    config,
-                    trade,
-                    "CLOSE SIGNAL",
-                    "Momentum weakened below EMA50 after entry.",
-                    ["Close the remaining position", "Protect booked profit"],
-                    last.open_time,
-                    last.close,
-                ),
-                config,
-            )
-            record_closed_trade(
-                root_state,
-                trade,
-                config,
-                last.close,
-                last.open_time,
                 "Momentum weakened after TP1",
             )
-            interval_state.pop("active_trade", None)
-            return True
 
     else:
+        current_stop = float(trade.get("current_stop_loss", trade["stop_loss"]))
         if last.high >= current_stop:
-            book_trade_realization(trade, float(trade.get("remaining_position_pct", 0.0) or 0.0), current_stop)
-            send_telegram(
-                format_trade_update_message(
-                    config,
-                    trade,
-                    "CLOSE SIGNAL",
-                    "Stop loss level touched. Close the remaining position now.",
-                    ["Close full remaining position", "Wait for the next fresh setup"],
-                    last.open_time,
-                    last.close,
-                ),
-                config,
-            )
-            record_closed_trade(
-                root_state,
-                trade,
-                config,
+            return close_trade(
+                "CLOSE SIGNAL",
+                "Stop loss level touched. Close the remaining position now.",
+                ["Close full remaining position", "Wait for the next fresh setup"],
                 current_stop,
-                last.open_time,
                 "Stop loss touched",
             )
-            interval_state.pop("active_trade", None)
-            return True
 
         if not bool(trade.get("tp1_hit")) and last.low <= tp1:
             trade["tp1_hit"] = True
@@ -1035,6 +1018,7 @@ def manage_active_trade(
                 ),
                 config,
             )
+            persist_open_trade()
 
         if bool(trade.get("tp1_hit")) and not bool(trade.get("tp2_hit")) and last.low <= tp2:
             trade["tp2_hit"] = True
@@ -1055,62 +1039,27 @@ def manage_active_trade(
                 ),
                 config,
             )
+            persist_open_trade()
 
         if last.low <= tp3:
-            book_trade_realization(trade, float(trade.get("remaining_position_pct", 0.0) or 0.0), tp3)
-            send_telegram(
-                format_trade_update_message(
-                    config,
-                    trade,
-                    "CLOSE SIGNAL: TP3 HIT",
-                    "Final target reached.",
-                    [f"Close the remaining {TP3_PARTIAL_PCT}% position now"],
-                    last.open_time,
-                    last.close,
-                ),
-                config,
-            )
-            record_closed_trade(
-                root_state,
-                trade,
-                config,
+            return close_trade(
+                "CLOSE SIGNAL: TP3 HIT",
+                "Final target reached.",
+                [f"Close the remaining {TP3_PARTIAL_PCT}% position now"],
                 tp3,
-                last.open_time,
                 "TP3 reached",
             )
-            interval_state.pop("active_trade", None)
-            return True
 
         if bool(trade.get("tp1_hit")) and last.close > ema_fast[-1] and last.close > last.open:
-            book_trade_realization(
-                trade,
-                float(trade.get("remaining_position_pct", 0.0) or 0.0),
+            return close_trade(
+                "CLOSE SIGNAL",
+                "Momentum weakened above EMA50 against the short position.",
+                ["Close the remaining position", "Protect booked profit"],
                 last.close,
-            )
-            send_telegram(
-                format_trade_update_message(
-                    config,
-                    trade,
-                    "CLOSE SIGNAL",
-                    "Momentum weakened above EMA50 against the short position.",
-                    ["Close the remaining position", "Protect booked profit"],
-                    last.open_time,
-                    last.close,
-                ),
-                config,
-            )
-            record_closed_trade(
-                root_state,
-                trade,
-                config,
-                last.close,
-                last.open_time,
                 "Momentum weakened after TP1",
             )
-            interval_state.pop("active_trade", None)
-            return True
 
-    interval_state["active_trade"] = trade
+    persist_open_trade()
     return True
 
 
@@ -1589,16 +1538,16 @@ def process_interval(
     interval: str,
     state: Dict[str, object],
     root_state: Dict[str, object],
-) -> None:
+) -> bool:
     interval_config = config_for_interval(base_config, interval)
     interval_state = get_interval_state(state, interval)
-    higher_timeframe_trend = fetch_confirmation_trend(base_config, interval)
-
     candles = fetch_klines(interval_config)
     current_candle_time = candles[-1].open_time
 
     if int(interval_state.get("last_checked_candle_time", 0) or 0) == current_candle_time:
-        return
+        return False
+
+    working_interval_state = copy.deepcopy(interval_state)
 
     minimum_required = minimum_required_candles(interval_config)
     if len(candles) < minimum_required:
@@ -1608,38 +1557,49 @@ def process_interval(
             minimum_required,
             len(candles),
         )
-        interval_state["last_checked_candle_time"] = current_candle_time
-        interval_state["insufficient_data_required"] = minimum_required
-        interval_state["insufficient_data_available"] = len(candles)
-        return
+        working_interval_state["last_checked_candle_time"] = current_candle_time
+        working_interval_state["insufficient_data_required"] = minimum_required
+        working_interval_state["insufficient_data_available"] = len(candles)
+        replace_state(interval_state, working_interval_state)
+        return True
 
-    interval_state["last_checked_candle_time"] = current_candle_time
-    interval_state.pop("insufficient_data_required", None)
-    interval_state.pop("insufficient_data_available", None)
+    working_interval_state["last_checked_candle_time"] = current_candle_time
+    working_interval_state.pop("insufficient_data_required", None)
+    working_interval_state.pop("insufficient_data_available", None)
 
     if manage_active_trade(candles, interval_state, root_state, interval_config):
+        managed_interval_state = copy.deepcopy(interval_state)
+        managed_interval_state["last_checked_candle_time"] = current_candle_time
+        managed_interval_state.pop("insufficient_data_required", None)
+        managed_interval_state.pop("insufficient_data_available", None)
+        replace_state(interval_state, managed_interval_state)
         LOGGER.info(
             "Trade management checked on %s %s. Waiting for next update or close condition.",
             interval_config.symbol,
             interval,
         )
-        return
+        return True
+
+    higher_timeframe_trend = fetch_confirmation_trend(base_config, interval)
 
     signal = analyze_market(candles, interval_config, higher_timeframe_trend)
     if not signal:
-        return
+        replace_state(interval_state, working_interval_state)
+        return True
 
-    if is_in_cooldown(signal, interval_state, interval_config):
+    if is_in_cooldown(signal, working_interval_state, interval_config):
         LOGGER.info("Signal skipped due to cooldown: %s on %s", signal.side, interval)
-        return
+        replace_state(interval_state, working_interval_state)
+        return True
 
     sent_time = format_now_local()
     send_telegram(format_signal_message(signal, interval_config, sent_time), interval_config)
     update_signal_stats(root_state, signal)
-    interval_state["active_trade"] = build_active_trade(signal, sent_time)
-    interval_state["last_signal_side"] = signal.side
-    interval_state["last_signal_candle_time"] = signal.candle_time
-    interval_state["last_signal_sent_time"] = sent_time
+    working_interval_state["active_trade"] = build_active_trade(signal, sent_time)
+    working_interval_state["last_signal_side"] = signal.side
+    working_interval_state["last_signal_candle_time"] = signal.candle_time
+    working_interval_state["last_signal_sent_time"] = sent_time
+    replace_state(interval_state, working_interval_state)
     LOGGER.info(
         "Mentor tracking started for %s %s %s signal.",
         interval_config.symbol,
@@ -1647,11 +1607,63 @@ def process_interval(
         signal.side,
     )
     LOGGER.info("Signal sent: %s at %s on %s (%s)", signal.side, signal.entry, interval, sent_time)
+    return True
+
+
+def iter_active_trades(state: Dict[str, object]) -> List[Tuple[str, str, Dict[str, object]]]:
+    active_trades: List[Tuple[str, str, Dict[str, object]]] = []
+    symbols_state = state.get("symbols", {})
+    if not isinstance(symbols_state, dict):
+        return active_trades
+
+    for symbol, symbol_state in symbols_state.items():
+        if not isinstance(symbol_state, dict):
+            continue
+
+        intervals_state = symbol_state.get("intervals", {})
+        if not isinstance(intervals_state, dict):
+            continue
+
+        for interval, interval_state in intervals_state.items():
+            if not isinstance(interval_state, dict):
+                continue
+
+            trade = interval_state.get("active_trade")
+            if isinstance(trade, dict):
+                active_trades.append((symbol, interval, trade))
+
+    return active_trades
+
+
+def build_active_trades_message(state: Dict[str, object]) -> str:
+    active_trades = iter_active_trades(state)
+    if not active_trades:
+        return "No active mentor trades right now."
+
+    sections: List[str] = []
+    for symbol, interval, trade in active_trades:
+        sections.append(
+            "\n".join(
+                [
+                    f"{symbol} {interval}",
+                    f"Side: {trade.get('tier', 'UNKNOWN')} {trade.get('side', 'UNKNOWN')}",
+                    f"Entry: {format_price(float(trade.get('entry', 0.0) or 0.0))}",
+                    f"Current Stop: {format_price(float(trade.get('current_stop_loss', trade.get('stop_loss', 0.0)) or 0.0))}",
+                    f"Remaining Position: {int(float(trade.get('remaining_position_pct', 0.0) or 0.0))}%",
+                    f"Locked Result: {format_r_multiple(float(trade.get('realized_r', 0.0) or 0.0))}",
+                    f"Next Targets: {format_remaining_tp_map(trade)}",
+                    f"Opened At: {trade.get('opened_at', '-')}",
+                ]
+            )
+        )
+
+    return "Active Trades\n\n" + "\n\n".join(sections)
 
 
 def build_status_message(config: Config, state: Dict[str, object]) -> str:
     performance_state = get_performance_state(state)
     overall_stats = get_stats_bucket(performance_state, "overall")
+    active_trade_count = len(iter_active_trades(state))
 
     return (
         "Bot Status\n\n"
@@ -1659,6 +1671,7 @@ def build_status_message(config: Config, state: Dict[str, object]) -> str:
         f"Intervals: {', '.join(config.intervals)}\n"
         f"Poll Seconds: {config.poll_seconds}\n"
         f"Alerts Chat ID: {config.telegram_chat_id or 'Not configured'}\n"
+        f"Active Trades: {active_trade_count}\n"
         f"Signals Sent: {int(overall_stats.get('signals_sent', 0))}\n"
         f"Closed Trades: {int(overall_stats.get('closed_trades', 0))}\n"
         f"Win Rate: {calculate_win_rate(overall_stats):.1f}%\n"
@@ -1675,8 +1688,8 @@ def scan_markets_once(config: Config, state: Dict[str, object]) -> None:
 
         for interval in symbol_config.intervals:
             try:
-                process_interval(symbol_config, interval, symbol_state, state)
-                state_changed = True
+                if process_interval(symbol_config, interval, symbol_state, state):
+                    state_changed = True
             except requests.RequestException as exc:
                 LOGGER.warning("Network/API error on %s %s: %s", symbol, interval, exc)
             except Exception as exc:
@@ -1703,7 +1716,14 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         f"Symbols: {', '.join(config.symbols)}\n"
         f"Intervals: {', '.join(config.intervals)}\n"
         f"Poll Seconds: {config.poll_seconds}\n"
-        f"Alerts Chat ID: {config.telegram_chat_id or 'Not configured'}"
+        f"Alerts Chat ID: {config.telegram_chat_id or 'Not configured'}\n\n"
+        "Commands:\n"
+        "/status - live bot summary\n"
+        "/active - open mentor trades\n"
+        "/report - today's performance report\n"
+        "/scan - run a manual scan now\n"
+        "/demo - test message\n"
+        "/chatid - show your chat id"
     )
     if update.effective_message:
         await update.effective_message.reply_text(message)
@@ -1716,10 +1736,25 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.effective_message.reply_text(build_status_message(config, state))
 
 
+async def active_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    state: Dict[str, object] = context.application.bot_data["state"]
+    if update.effective_message:
+        await update.effective_message.reply_text(build_active_trades_message(state))
+
+
 async def chatid_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id if update.effective_chat else "Unknown"
     if update.effective_message:
         await update.effective_message.reply_text(f"Your chat ID is: {chat_id}")
+
+
+async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    config: Config = context.application.bot_data["config"]
+    state: Dict[str, object] = context.application.bot_data["state"]
+    if update.effective_message:
+        await update.effective_message.reply_text(
+            build_daily_report_message(config, current_local_date(), state)
+        )
 
 
 async def demo_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1727,6 +1762,37 @@ async def demo_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     message = await asyncio.to_thread(build_demo_message, config)
     if update.effective_message:
         await update.effective_message.reply_text(message)
+
+
+async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    config: Config = context.application.bot_data["config"]
+    state: Dict[str, object] = context.application.bot_data["state"]
+    scan_lock: threading.Lock = context.application.bot_data["scan_lock"]
+
+    if not scan_lock.acquire(blocking=False):
+        if update.effective_message:
+            await update.effective_message.reply_text("A scan is already running.")
+        return
+
+    try:
+        await asyncio.to_thread(scan_markets_once, config, state)
+    except requests.RequestException as exc:
+        LOGGER.warning("Manual scan failed due to network/API error: %s", exc)
+        if update.effective_message:
+            await update.effective_message.reply_text(f"Manual scan failed: {exc}")
+        return
+    except Exception as exc:
+        LOGGER.exception("Manual scan crashed: %s", exc)
+        if update.effective_message:
+            await update.effective_message.reply_text(f"Manual scan crashed: {exc}")
+        return
+    finally:
+        scan_lock.release()
+
+    if update.effective_message:
+        await update.effective_message.reply_text(
+            "Manual scan complete.\n\n" + build_status_message(config, state)
+        )
 
 
 async def market_scan_job(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1752,6 +1818,9 @@ def build_application(config: Config, state: Dict[str, object]) -> Application:
 
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("status", status_command))
+    application.add_handler(CommandHandler("active", active_command))
+    application.add_handler(CommandHandler("report", report_command))
+    application.add_handler(CommandHandler("scan", scan_command))
     application.add_handler(CommandHandler("chatid", chatid_command))
     application.add_handler(CommandHandler("demo", demo_command))
     application.job_queue.run_repeating(
