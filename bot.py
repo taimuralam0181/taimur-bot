@@ -125,6 +125,11 @@ class MarketOverview:
     breakout_check: str
     volume_momentum: str
     entry_rule: str
+    trend_bias: str
+    entry_zone_side: str
+    bullish_rejection_valid: bool
+    bearish_rejection_valid: bool
+    strong_bullish_candle: bool
 
 
 def parse_intervals() -> List[str]:
@@ -657,10 +662,13 @@ def build_market_overview(
 
     if close_near_support:
         entry_condition = "Price is in support entry zone"
+        entry_zone_side = "SUPPORT"
     elif close_near_resistance:
         entry_condition = "Price is in resistance entry zone"
+        entry_zone_side = "RESISTANCE"
     else:
         entry_condition = "Price is outside entry zone - NO TRADE"
+        entry_zone_side = "OUTSIDE"
 
     bullish_rejection = lower_wick >= body_size * 1.2 and last.close >= last.open
     bearish_rejection = upper_wick >= body_size * 1.2 and last.close <= last.open
@@ -707,6 +715,15 @@ def build_market_overview(
     else:
         macd_state = "MACD neutral"
 
+    strong_bullish_candle = (
+        trend == "Bullish"
+        and last.close > last.open
+        and body_ratio >= 0.6
+        and (last.high - last.close) <= candle_range * 0.25
+        and volume_ratio >= 1.0
+        and macd_state == "MACD bullish"
+    )
+
     if trend == "Bullish" and close_near_support and bullish_rejection:
         entry_rule = "LONG: support + bullish rejection"
     elif trend == "Bearish" and close_near_resistance and bearish_rejection:
@@ -730,6 +747,11 @@ def build_market_overview(
         breakout_check=breakout_check,
         volume_momentum=f"{volume_state}, {macd_state}",
         entry_rule=entry_rule,
+        trend_bias=trend,
+        entry_zone_side=entry_zone_side,
+        bullish_rejection_valid=close_near_support and bullish_rejection,
+        bearish_rejection_valid=close_near_resistance and bearish_rejection,
+        strong_bullish_candle=strong_bullish_candle,
     )
 
 
@@ -744,6 +766,127 @@ def build_market_overview_lines(overview: MarketOverview) -> List[str]:
         f"Volume & Momentum: {overview.volume_momentum}",
         f"Entry Rule Verdict: {overview.entry_rule}",
     ]
+
+
+def calculate_market_overview_for_candles(candles: List[Candle], config: Config) -> MarketOverview:
+    closes = [c.close for c in candles]
+    ema_fast = calculate_ema(closes, config.ema_fast_period)
+    ema_slow = calculate_ema(closes, config.ema_slow_period)
+    rsi_values = calculate_rsi(closes, config.rsi_period)
+    atr_values = calculate_atr(candles, config.atr_period)
+    return build_market_overview(
+        candles,
+        ema_fast,
+        ema_slow,
+        rsi_values,
+        atr_values,
+        config,
+    )
+
+
+def build_market_condition_alert_message(
+    config: Config,
+    title: str,
+    candle_time: int,
+    overview: MarketOverview,
+    focus_lines: List[str],
+) -> str:
+    market_lines = "\n".join(f"- {line}" for line in build_market_overview_lines(overview))
+    action_lines = "\n".join(f"- {line}" for line in focus_lines)
+
+    return (
+        f"{title}\n\n"
+        f"Pair: {config.symbol}\n"
+        f"Timeframe: {config.interval}\n"
+        f"Candle Time: {format_local_time(candle_time)}\n\n"
+        f"Market Condition:\n{market_lines}\n\n"
+        f"Alert Focus:\n{action_lines}"
+    )
+
+
+def send_market_condition_alerts(
+    config: Config,
+    candle: Candle,
+    overview: MarketOverview,
+    interval_state: Dict[str, object],
+) -> bool:
+    state_changed = False
+    current_entry_zone = overview.entry_zone_side
+    previous_entry_zone = str(interval_state.get("last_entry_zone_state", "OUTSIDE"))
+
+    if current_entry_zone in {"SUPPORT", "RESISTANCE"} and previous_entry_zone != current_entry_zone:
+        send_telegram(
+            build_market_condition_alert_message(
+                config,
+                "ENTRY ZONE ALERT",
+                candle.open_time,
+                overview,
+                [
+                    "Price has moved into the active entry zone",
+                    "Wait for a clean rejection or breakout confirmation",
+                    f"Current verdict: {overview.entry_rule}",
+                ],
+            ),
+            config,
+        )
+        state_changed = True
+
+    interval_state["last_entry_zone_state"] = current_entry_zone
+
+    rejection_key = ""
+    rejection_focus: List[str] = []
+    if overview.bullish_rejection_valid:
+        rejection_key = f"bullish:{candle.open_time}"
+        rejection_focus = [
+            "Strong bullish rejection candle detected at support",
+            "Lower wick defended the support zone",
+            f"Current verdict: {overview.entry_rule}",
+        ]
+    elif overview.bearish_rejection_valid:
+        rejection_key = f"bearish:{candle.open_time}"
+        rejection_focus = [
+            "Strong bearish rejection candle detected at resistance",
+            "Upper wick rejected the resistance zone",
+            f"Current verdict: {overview.entry_rule}",
+        ]
+
+    if rejection_key and interval_state.get("last_rejection_alert_key") != rejection_key:
+        send_telegram(
+            build_market_condition_alert_message(
+                config,
+                "REJECTION CANDLE ALERT",
+                candle.open_time,
+                overview,
+                rejection_focus,
+            ),
+            config,
+        )
+        interval_state["last_rejection_alert_key"] = rejection_key
+        state_changed = True
+
+    bullish_candle_key = f"bullish-candle:{candle.open_time}"
+    if (
+        overview.strong_bullish_candle
+        and interval_state.get("last_strong_bullish_alert_key") != bullish_candle_key
+    ):
+        send_telegram(
+            build_market_condition_alert_message(
+                config,
+                "STRONG BULLISH CANDLE ALERT",
+                candle.open_time,
+                overview,
+                [
+                    "Strong bullish candle confirmed with trend support",
+                    "Body strength, close position, volume, and MACD are aligned",
+                    f"Current verdict: {overview.entry_rule}",
+                ],
+            ),
+            config,
+        )
+        interval_state["last_strong_bullish_alert_key"] = bullish_candle_key
+        state_changed = True
+
+    return state_changed
 
 
 def get_performance_state(state: Dict[str, object]) -> Dict[str, object]:
@@ -1730,19 +1873,7 @@ def format_signal_message(
 
 def build_market_message(config: Config) -> str:
     candles = fetch_klines(config)
-    closes = [c.close for c in candles]
-    ema_fast = calculate_ema(closes, config.ema_fast_period)
-    ema_slow = calculate_ema(closes, config.ema_slow_period)
-    rsi_values = calculate_rsi(closes, config.rsi_period)
-    atr_values = calculate_atr(candles, config.atr_period)
-    overview = build_market_overview(
-        candles,
-        ema_fast,
-        ema_slow,
-        rsi_values,
-        atr_values,
-        config,
-    )
+    overview = calculate_market_overview_for_candles(candles, config)
     overview_lines = "\n".join(f"- {line}" for line in build_market_overview_lines(overview))
 
     return (
@@ -1951,6 +2082,19 @@ def process_interval(
 
     signal = analyze_market(candles, interval_config, higher_timeframe_trend)
     if not signal:
+        market_overview = calculate_market_overview_for_candles(candles, interval_config)
+        if send_market_condition_alerts(
+            interval_config,
+            candles[-1],
+            market_overview,
+            working_interval_state,
+        ):
+            LOGGER.info(
+                "Context alert sent on %s %s with verdict %s.",
+                interval_config.symbol,
+                interval,
+                market_overview.entry_rule,
+            )
         replace_state(interval_state, working_interval_state)
         return True
 
