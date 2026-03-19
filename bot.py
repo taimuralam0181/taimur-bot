@@ -89,6 +89,9 @@ class Candle:
 @dataclass
 class Signal:
     tier: str
+    grade: str
+    setup_type: str
+    setup_note: str
     verdict: str
     side: str
     score: int
@@ -897,8 +900,34 @@ def classify_signal(score: int, config: Config) -> Tuple[str, str]:
     return "NORMAL", "Usable setup. Normal signal is lower priority than VIP."
 
 
+def classify_setup_grade(
+    score: int,
+    side: str,
+    reasons: List[str],
+    config: Config,
+) -> Tuple[str, str, str]:
+    has_htf = any("Higher timeframe trend confirms" in reason for reason in reasons)
+    has_volume = any("Volume expansion confirmed" in reason for reason in reasons)
+    has_retest = any("retest" in reason.lower() for reason in reasons)
+
+    if side == "LONG":
+        setup_type = "Bullish Breakout Continuation"
+        setup_note = "Trend up, resistance break, then continuation follow-through."
+    else:
+        setup_type = "Bearish Breakdown Continuation"
+        setup_note = "Trend down, support break, then continuation follow-through."
+
+    if score >= max(config.vip_signal_score + 6, 90) and has_htf and has_volume and has_retest:
+        return "A+", setup_type, setup_note
+    if score >= config.vip_signal_score:
+        return "A", setup_type, setup_note
+    if score >= max(config.min_signal_score + 6, config.vip_signal_score - 4):
+        return "A-", setup_type, setup_note
+    return "B+", setup_type, setup_note
+
+
 def build_trade_plan(signal: Signal, config: Config) -> Tuple[str, str, str]:
-    if signal.tier == "VIP":
+    if signal.grade in {"A+", "A"} or signal.tier == "VIP":
         risk_pct = f"{config.vip_risk_pct:.2f}%"
         leverage = config.vip_leverage
     else:
@@ -912,6 +941,8 @@ def build_trade_plan(signal: Signal, config: Config) -> Tuple[str, str, str]:
 def build_active_trade(signal: Signal, sent_time: str) -> Dict[str, object]:
     return {
         "tier": signal.tier,
+        "grade": signal.grade,
+        "setup_type": signal.setup_type,
         "side": signal.side,
         "score": signal.score,
         "entry": signal.entry,
@@ -960,7 +991,8 @@ def format_trade_update_message(
         f"{title}\n\n"
         f"Pair: {config.symbol}\n"
         f"Timeframe: {config.interval}\n"
-        f"Original Signal: {trade['tier']} {trade['side']}\n"
+        f"Original Signal: {trade.get('grade', trade['tier'])} {trade['side']}\n"
+        f"Setup Type: {trade.get('setup_type', 'Tracked setup')}\n"
         f"Entry: {format_price(float(trade['entry']))}\n"
         f"Opened At: {trade.get('opened_at', '-')}\n"
         f"Current Price: {format_price(current_price)}\n"
@@ -1260,6 +1292,7 @@ def build_signal(
         return None
 
     tier, verdict = classify_signal(score, config)
+    grade, setup_type, setup_note = classify_setup_grade(score, side, reasons, config)
 
     if side == "LONG":
         take_profits = [
@@ -1276,6 +1309,9 @@ def build_signal(
 
     return Signal(
         tier=tier,
+        grade=grade,
+        setup_type=setup_type,
+        setup_note=setup_note,
         verdict=verdict,
         side=side,
         score=score,
@@ -1488,9 +1524,11 @@ def format_signal_message(
     mentor_tracking_line = "Mentor Tracking: ON - TP/CLOSE updates come after candle close\n"
 
     if is_demo:
-        title = f"DEMO SIGNAL: {signal.side}"
+        title = f"DEMO SIGNAL: {signal.grade} {signal.side}"
         demo_lines = "Message Type: Demo/Test\nTrade Status: DO NOT TRADE THIS MESSAGE\n"
         mentor_tracking_line = "Mentor Tracking: OFF - demo message only\n"
+    else:
+        title = f"{signal.grade} SIGNAL: {signal.side}"
 
     return (
         f"{title}\n\n"
@@ -1498,6 +1536,9 @@ def format_signal_message(
         f"Timeframe: {config.interval}\n"
         f"{demo_lines}"
         f"{mentor_tracking_line}"
+        f"Setup Grade: {signal.grade}\n"
+        f"Setup Type: {signal.setup_type}\n"
+        f"Setup Note: {signal.setup_note}\n"
         f"Signal Tier: {signal.tier}\n"
         f"Quality Verdict: {signal.verdict}\n"
         f"Margin Mode: {config.margin_mode}\n"
@@ -1578,11 +1619,14 @@ def build_demo_message(config: Config) -> str:
     )
 
     return (
-        "DEMO SIGNAL: LONG\n\n"
+        "DEMO SIGNAL: A SIGNAL LONG\n\n"
         f"Pair: {config.symbol}\n"
         f"Timeframe: {config.interval}\n"
         "Message Type: Demo/Test\n"
         "Trade Status: DO NOT TRADE THIS MESSAGE\n"
+        "Setup Grade: A\n"
+        "Setup Type: Bullish Breakout Continuation\n"
+        "Setup Note: Trend up, resistance break, then continuation follow-through.\n"
         "Signal Tier: VIP\n"
         "Quality Verdict: Best quality setup. VIP signal is better than normal.\n"
         f"Margin Mode: {config.margin_mode}\n"
