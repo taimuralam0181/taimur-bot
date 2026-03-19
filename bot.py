@@ -4,7 +4,7 @@ import json
 import logging
 import os
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -102,6 +102,7 @@ class Signal:
     candle_time: int
     market_structure_level: float
     atr: float
+    market_overview: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -112,6 +113,18 @@ class TrendSnapshot:
     ema_fast: float
     ema_slow: float
     rsi: float
+
+
+@dataclass
+class MarketOverview:
+    trend: str
+    support_zone: str
+    resistance_zone: str
+    entry_condition: str
+    rejection_candle: str
+    breakout_check: str
+    volume_momentum: str
+    entry_rule: str
 
 
 def parse_intervals() -> List[str]:
@@ -531,6 +544,23 @@ def calculate_atr(candles: List[Candle], period: int) -> List[float]:
     return atr_values
 
 
+def calculate_macd(
+    values: List[float],
+    fast_period: int = 12,
+    slow_period: int = 26,
+    signal_period: int = 9,
+) -> Tuple[List[float], List[float], List[float]]:
+    if len(values) < slow_period + signal_period:
+        raise ValueError("MACD requires more price history.")
+
+    fast_ema = calculate_ema(values, fast_period)
+    slow_ema = calculate_ema(values, slow_period)
+    macd_line = [fast - slow for fast, slow in zip(fast_ema, slow_ema)]
+    signal_line = calculate_ema(macd_line, signal_period)
+    histogram = [macd - signal for macd, signal in zip(macd_line, signal_line)]
+    return macd_line, signal_line, histogram
+
+
 def average(values: List[float]) -> float:
     return sum(values) / len(values)
 
@@ -578,6 +608,142 @@ def local_date_from_timestamp(timestamp_ms: int) -> str:
 
 def format_r_multiple(value: float) -> str:
     return f"{value:+.2f}R"
+
+
+def format_zone(center: float, atr: float, multiplier: float = 0.35) -> Tuple[str, float, float]:
+    zone_buffer = max(atr * multiplier, abs(center) * 0.001)
+    lower = round_price(center - zone_buffer)
+    upper = round_price(center + zone_buffer)
+    return f"{format_price(lower)} - {format_price(upper)}", lower, upper
+
+
+def build_market_overview(
+    candles: List[Candle],
+    ema_fast: List[float],
+    ema_slow: List[float],
+    rsi_values: List[float],
+    atr_values: List[float],
+    config: Config,
+) -> MarketOverview:
+    last = candles[-1]
+    closes = [c.close for c in candles]
+    highs = [c.high for c in candles]
+    lows = [c.low for c in candles]
+    volumes = [c.volume for c in candles]
+
+    support = min(lows[-config.sr_lookback - 1 : -1])
+    resistance = max(highs[-config.sr_lookback - 1 : -1])
+    atr = atr_values[-1]
+    avg_volume = average(volumes[-config.volume_period - 1 : -1])
+    macd_line, signal_line, histogram = calculate_macd(closes)
+
+    support_zone, support_lower, support_upper = format_zone(support, atr)
+    resistance_zone, resistance_lower, resistance_upper = format_zone(resistance, atr)
+
+    body_size = abs(last.close - last.open)
+    candle_range = max(last.high - last.low, 1e-9)
+    body_ratio = body_size / candle_range
+    upper_wick = last.high - max(last.open, last.close)
+    lower_wick = min(last.open, last.close) - last.low
+    close_near_support = support_lower <= last.close <= support_upper
+    close_near_resistance = resistance_lower <= last.close <= resistance_upper
+
+    if last.close > ema_fast[-1] > ema_slow[-1] and ema_fast[-1] > ema_fast[-2]:
+        trend = "Bullish"
+    elif last.close < ema_fast[-1] < ema_slow[-1] and ema_fast[-1] < ema_fast[-2]:
+        trend = "Bearish"
+    else:
+        trend = "Sideways"
+
+    if close_near_support:
+        entry_condition = "Price is in support entry zone"
+    elif close_near_resistance:
+        entry_condition = "Price is in resistance entry zone"
+    else:
+        entry_condition = "Price is outside entry zone - NO TRADE"
+
+    bullish_rejection = lower_wick >= body_size * 1.2 and last.close >= last.open
+    bearish_rejection = upper_wick >= body_size * 1.2 and last.close <= last.open
+
+    if close_near_support and bullish_rejection:
+        rejection_candle = "Bullish rejection candle: strong lower wick"
+    elif close_near_resistance and bearish_rejection:
+        rejection_candle = "Bearish rejection candle: strong upper wick"
+    elif bullish_rejection:
+        rejection_candle = "Lower wick exists, but not at support zone"
+    elif bearish_rejection:
+        rejection_candle = "Upper wick exists, but not at resistance zone"
+    else:
+        rejection_candle = "No valid rejection candle"
+
+    real_bullish_breakout = last.close > resistance * (1 + config.breakout_buffer_pct) and body_ratio >= 0.5
+    fake_bullish_breakout = last.high > resistance * (1 + config.breakout_buffer_pct) and last.close <= resistance
+    real_bearish_breakdown = last.close < support * (1 - config.breakout_buffer_pct) and body_ratio >= 0.5
+    fake_bearish_breakdown = last.low < support * (1 - config.breakout_buffer_pct) and last.close >= support
+
+    if real_bullish_breakout:
+        breakout_check = "Real breakout: strong close above resistance"
+    elif real_bearish_breakdown:
+        breakout_check = "Real breakout: strong close below support"
+    elif fake_bullish_breakout:
+        breakout_check = "Fake breakout: wick above resistance only"
+    elif fake_bearish_breakdown:
+        breakout_check = "Fake breakout: wick below support only"
+    else:
+        breakout_check = "No breakout trigger"
+
+    volume_ratio = last.volume / max(avg_volume, 1e-9)
+    if volume_ratio >= config.volume_spike_factor:
+        volume_state = "Volume increasing"
+    elif volume_ratio >= 0.9:
+        volume_state = "Volume stable"
+    else:
+        volume_state = "Volume decreasing"
+
+    if macd_line[-1] > signal_line[-1] and histogram[-1] > 0:
+        macd_state = "MACD bullish"
+    elif macd_line[-1] < signal_line[-1] and histogram[-1] < 0:
+        macd_state = "MACD bearish"
+    else:
+        macd_state = "MACD neutral"
+
+    if trend == "Bullish" and close_near_support and bullish_rejection:
+        entry_rule = "LONG: support + bullish rejection"
+    elif trend == "Bearish" and close_near_resistance and bearish_rejection:
+        entry_rule = "SHORT: resistance + bearish rejection"
+    elif real_bullish_breakout and macd_state == "MACD bullish":
+        entry_rule = "LONG: real breakout continuation"
+    elif real_bearish_breakdown and macd_state == "MACD bearish":
+        entry_rule = "SHORT: real breakdown continuation"
+    else:
+        entry_rule = "NO TRADE"
+
+    if trend == "Sideways" and entry_rule != "NO TRADE":
+        entry_rule = "NO TRADE"
+
+    return MarketOverview(
+        trend=f"{trend} (RSI {rsi_values[-1]:.1f})",
+        support_zone=f"Strong support zone: {support_zone}",
+        resistance_zone=f"Strong resistance zone: {resistance_zone}",
+        entry_condition=entry_condition,
+        rejection_candle=rejection_candle,
+        breakout_check=breakout_check,
+        volume_momentum=f"{volume_state}, {macd_state}",
+        entry_rule=entry_rule,
+    )
+
+
+def build_market_overview_lines(overview: MarketOverview) -> List[str]:
+    return [
+        f"Market Trend: {overview.trend}",
+        overview.support_zone,
+        overview.resistance_zone,
+        f"Entry Condition: {overview.entry_condition}",
+        f"Rejection Candle: {overview.rejection_candle}",
+        f"Breakout Check: {overview.breakout_check}",
+        f"Volume & Momentum: {overview.volume_momentum}",
+        f"Entry Rule Verdict: {overview.entry_rule}",
+    ]
 
 
 def get_performance_state(state: Dict[str, object]) -> Dict[str, object]:
@@ -1516,6 +1682,9 @@ def format_signal_message(
     take_profits = " / ".join(format_price(tp) for tp in signal.take_profits)
     profit_plan = "\n".join(f"- {line}" for line in build_profit_plan_lines(signal))
     reasons = "\n".join(f"- {reason}" for reason in signal.reasons)
+    market_overview = "\n".join(f"- {line}" for line in signal.market_overview)
+    if not market_overview:
+        market_overview = "- No live market condition attached"
     signal_time = format_local_time(signal.candle_time)
     alert_sent_time = sent_time or format_now_local()
     risk_pct, leverage, leverage_note = build_trade_plan(signal, config)
@@ -1553,8 +1722,35 @@ def format_signal_message(
         f"ATR: {format_price(signal.atr)}\n"
         f"SL: {format_price(signal.stop_loss)}\n"
         f"TP: {take_profits}\n\n"
+        f"Market Condition:\n{market_overview}\n\n"
         f"Mentor Profit Plan:\n{profit_plan}\n\n"
         f"Reasons:\n{reasons}"
+    )
+
+
+def build_market_message(config: Config) -> str:
+    candles = fetch_klines(config)
+    closes = [c.close for c in candles]
+    ema_fast = calculate_ema(closes, config.ema_fast_period)
+    ema_slow = calculate_ema(closes, config.ema_slow_period)
+    rsi_values = calculate_rsi(closes, config.rsi_period)
+    atr_values = calculate_atr(candles, config.atr_period)
+    overview = build_market_overview(
+        candles,
+        ema_fast,
+        ema_slow,
+        rsi_values,
+        atr_values,
+        config,
+    )
+    overview_lines = "\n".join(f"- {line}" for line in build_market_overview_lines(overview))
+
+    return (
+        "MARKET STATUS\n\n"
+        f"Pair: {config.symbol}\n"
+        f"Timeframe: {config.interval}\n"
+        f"Checked At: {format_now_local()}\n\n"
+        f"{overview_lines}"
     )
 
 
@@ -1666,6 +1862,14 @@ def analyze_market(
     ema_slow = calculate_ema(closes, config.ema_slow_period)
     rsi_values = calculate_rsi(closes, config.rsi_period)
     atr_values = calculate_atr(candles, config.atr_period)
+    market_overview = build_market_overview(
+        candles,
+        ema_fast,
+        ema_slow,
+        rsi_values,
+        atr_values,
+        config,
+    )
 
     long_score, long_signal = evaluate_long_setup(
         candles, ema_fast, ema_slow, rsi_values, atr_values, config, higher_timeframe_trend
@@ -1674,12 +1878,17 @@ def analyze_market(
         candles, ema_fast, ema_slow, rsi_values, atr_values, config, higher_timeframe_trend
     )
 
+    selected_signal: Optional[Signal] = None
     if long_signal and short_signal:
-        return long_signal if long_score >= short_score else short_signal
-    if long_signal:
-        return long_signal
-    if short_signal:
-        return short_signal
+        selected_signal = long_signal if long_score >= short_score else short_signal
+    elif long_signal:
+        selected_signal = long_signal
+    elif short_signal:
+        selected_signal = short_signal
+
+    if selected_signal:
+        selected_signal.market_overview = build_market_overview_lines(market_overview)
+        return selected_signal
 
     LOGGER.info(
         "No trade setup on %s %s. Long score=%s, Short score=%s",
@@ -1877,6 +2086,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         f"Alerts Chat ID: {config.telegram_chat_id or 'Not configured'}\n\n"
         "Commands:\n"
         "/status - live bot summary\n"
+        "/market - current market condition\n"
         "/accuracy - real accuracy tracker\n"
         "/active - open mentor trades\n"
         "/report - today's performance report\n"
@@ -1893,6 +2103,37 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     state: Dict[str, object] = context.application.bot_data["state"]
     if update.effective_message:
         await update.effective_message.reply_text(build_status_message(config, state))
+
+
+async def market_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    config: Config = context.application.bot_data["config"]
+    messages: List[str] = []
+
+    for symbol in config.symbols:
+        symbol_config = config_for_symbol(config, symbol)
+        for interval in config.intervals:
+            interval_config = config_for_interval(symbol_config, interval)
+            try:
+                messages.append(await asyncio.to_thread(build_market_message, interval_config))
+            except Exception as exc:
+                LOGGER.warning("Market status build failed on %s %s: %s", symbol, interval, exc)
+                messages.append(
+                    "\n".join(
+                        [
+                            "MARKET STATUS",
+                            "",
+                            f"Pair: {symbol}",
+                            f"Timeframe: {interval}",
+                            f"Checked At: {format_now_local()}",
+                            "",
+                            f"- Could not build market condition: {exc}",
+                        ]
+                    )
+                )
+
+    if update.effective_message:
+        for message in messages:
+            await update.effective_message.reply_text(message)
 
 
 async def accuracy_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1983,6 +2224,7 @@ def build_application(config: Config, state: Dict[str, object]) -> Application:
 
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("status", status_command))
+    application.add_handler(CommandHandler("market", market_command))
     application.add_handler(CommandHandler("accuracy", accuracy_command))
     application.add_handler(CommandHandler("active", active_command))
     application.add_handler(CommandHandler("report", report_command))
