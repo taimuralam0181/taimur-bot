@@ -3,6 +3,7 @@ import copy
 import json
 import logging
 import os
+import re
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -11,7 +12,14 @@ from typing import Dict, List, Optional, Tuple
 
 import requests
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    ContextTypes,
+    ConversationHandler,
+    MessageHandler,
+    filters,
+)
 
 
 LOGGER = logging.getLogger("pro_trader_bot")
@@ -37,6 +45,23 @@ DEFAULT_INTERVALS = [
     "1h",
     "4h",
 ]
+USER_SIGNAL_INPUT = 1
+USER_SIGNAL_TEMPLATE = (
+    "Send your signal in this format.\n"
+    "Bot will also try to auto-detect other formats.\n\n"
+    "PAIR: BTCUSDT\n"
+    "TIMEFRAME: 15m\n"
+    "SIDE: SHORT\n"
+    "ENTRY: 69800-70300\n"
+    "SL: 71000\n"
+    "TP1: 68800\n"
+    "TP2: 68000\n"
+    "TP3: 66800"
+)
+USER_SIGNAL_FIELD_LOOKAHEAD = (
+    r"(?=\b(?:PAIR|SYMBOL|COIN|TIMEFRAME|TF|SIDE|ENTRY(?:\s+ZONE)?|BUY\s+ZONE|SELL\s+ZONE|"
+    r"STOP(?:\s+LOSS)?|SL|TP\s*1|TP\s*2|TP\s*3|TARGET\s*1|TARGET\s*2|TARGET\s*3|TARGETS?|TPS?)\b|$)"
+)
 
 
 @dataclass
@@ -146,6 +171,19 @@ class AnalysisResult:
     short_score: int
 
 
+@dataclass
+class UserSignalInput:
+    symbol: str
+    interval: str
+    side: str = ""
+    entry_low: Optional[float] = None
+    entry_high: Optional[float] = None
+    stop_loss: Optional[float] = None
+    take_profits: List[float] = field(default_factory=list)
+    notes: List[str] = field(default_factory=list)
+    raw_text: str = ""
+
+
 def parse_intervals() -> List[str]:
     intervals_value = os.getenv("BOT_INTERVALS", "").strip()
     if intervals_value:
@@ -232,22 +270,22 @@ def load_config() -> Config:
         atr_period=int(os.getenv("BOT_ATR_PERIOD", "14")),
         sr_lookback=int(os.getenv("BOT_SR_LOOKBACK", "20")),
         volume_period=int(os.getenv("BOT_VOLUME_PERIOD", "20")),
-        volume_spike_factor=float(os.getenv("BOT_VOLUME_SPIKE_FACTOR", "1.02")),
-        breakout_buffer_pct=float(os.getenv("BOT_BREAKOUT_BUFFER_PCT", "0.0006")),
-        cooldown_candles=int(os.getenv("BOT_COOLDOWN_CANDLES", "2")),
-        min_signal_score=int(os.getenv("BOT_MIN_SIGNAL_SCORE", "64")),
-        vip_signal_score=int(os.getenv("BOT_VIP_SIGNAL_SCORE", "76")),
+        volume_spike_factor=float(os.getenv("BOT_VOLUME_SPIKE_FACTOR", "1.08")),
+        breakout_buffer_pct=float(os.getenv("BOT_BREAKOUT_BUFFER_PCT", "0.0010")),
+        cooldown_candles=int(os.getenv("BOT_COOLDOWN_CANDLES", "3")),
+        min_signal_score=int(os.getenv("BOT_MIN_SIGNAL_SCORE", "74")),
+        vip_signal_score=int(os.getenv("BOT_VIP_SIGNAL_SCORE", "86")),
         normal_risk_pct=float(os.getenv("BOT_NORMAL_RISK_PCT", "0.5")),
         vip_risk_pct=float(os.getenv("BOT_VIP_RISK_PCT", "0.8")),
         normal_leverage=os.getenv("BOT_NORMAL_LEVERAGE", "3x-5x").strip(),
         vip_leverage=os.getenv("BOT_VIP_LEVERAGE", "5x-8x").strip(),
         margin_mode=os.getenv("BOT_MARGIN_MODE", "Isolated").strip() or "Isolated",
         require_higher_timeframe_confirmation=parse_bool_env(
-            "BOT_REQUIRE_HTF_CONFIRMATION", False
+            "BOT_REQUIRE_HTF_CONFIRMATION", True
         ),
         watch_alert_enabled=parse_bool_env("BOT_WATCH_ALERT_ENABLED", True),
         watch_alert_score_gap=int(os.getenv("BOT_WATCH_ALERT_SCORE_GAP", "10")),
-        max_extension_atr=float(os.getenv("BOT_MAX_EXTENSION_ATR", "2.3")),
+        max_extension_atr=float(os.getenv("BOT_MAX_EXTENSION_ATR", "2.0")),
         atr_stop_multiplier=float(os.getenv("BOT_ATR_STOP_MULTIPLIER", "1.2")),
         tp_one_r=float(os.getenv("BOT_TP1_R", "1.5")),
         tp_two_r=float(os.getenv("BOT_TP2_R", "2.5")),
@@ -887,11 +925,12 @@ def build_watch_alert_message(
     action_text = "\n".join(f"- {line}" for line in action_lines)
 
     return (
-        "SETUP WATCH ALERT\n\n"
+        "SETUP WATCH ALERT - NO ENTRY\n\n"
         f"Pair: {config.symbol}\n"
         f"Timeframe: {config.interval}\n"
         f"Time: {format_local_time(candle.open_time)}\n"
         f"Current Price: {format_price(candle.close)}\n"
+        "Trade Status: WATCH ONLY - DO NOT ENTER YET\n"
         f"Watch Side: {watch_side}\n"
         f"Watch Score: {watch_score}/{config.min_signal_score}\n"
         f"Trend: {overview.trend}\n"
@@ -1979,7 +2018,15 @@ def evaluate_long_setup(
 
     structure_confirmed = breakout or retest_hold
 
-    mandatory_checks = [trend_up, structure_confirmed, bullish_body, not_overextended]
+    mandatory_checks = [
+        trend_up,
+        structure_confirmed,
+        volume_spike,
+        rsi_ok,
+        bullish_body,
+        close_near_high,
+        not_overextended,
+    ]
     if config.require_higher_timeframe_confirmation and confirmation_interval(config.interval):
         mandatory_checks.append(htf_confirmed)
 
@@ -2067,7 +2114,15 @@ def evaluate_short_setup(
 
     structure_confirmed = breakdown or retest_fail
 
-    mandatory_checks = [trend_down, structure_confirmed, bearish_body, not_overextended]
+    mandatory_checks = [
+        trend_down,
+        structure_confirmed,
+        volume_spike,
+        rsi_ok,
+        bearish_body,
+        close_near_low,
+        not_overextended,
+    ]
     if config.require_higher_timeframe_confirmation and confirmation_interval(config.interval):
         mandatory_checks.append(htf_confirmed)
 
@@ -2176,6 +2231,7 @@ def build_hourly_update_message(config: Config) -> str:
         f"Update Time: {format_now_local()}",
         f"Timeframe: {config.hourly_update_timeframe}",
         f"Watchlist: {', '.join(config.symbols)}",
+        "Trade Status: INFO ONLY - not a real entry signal",
         "",
         "Real signal thakle alada signal message jabe.",
         "Na thakle ei update diye current market bias bujhte parba.",
@@ -2579,11 +2635,356 @@ def build_signal_checker_message(config: Config) -> str:
     return "\n".join(lines).rstrip()
 
 
+def build_user_signal_help_message() -> str:
+    return (
+        f"{USER_SIGNAL_TEMPLATE}\n\n"
+        "Example free-form:\n"
+        "Short BTCUSDT 15m entry 69800 to 70300, stop loss above 71000, "
+        "targets 68800, 68000, 66800"
+    )
+
+
+def normalize_user_signal_text(text: str) -> str:
+    return (
+        text.upper()
+        .replace("—", "-")
+        .replace("–", "-")
+        .replace("−", "-")
+        .replace("~", "-")
+    )
+
+
+def normalize_symbol_token(token: str) -> str:
+    cleaned = token.strip().upper().replace(" ", "").replace("/", "")
+    if not cleaned:
+        return ""
+    if cleaned.endswith("USDT"):
+        return cleaned
+    return f"{cleaned}USDT"
+
+
+def normalize_interval_token(token: str) -> str:
+    return token.strip().replace(" ", "").lower()
+
+
+def looks_like_symbol_token(token: str) -> bool:
+    cleaned = token.strip().upper().replace(" ", "")
+    if cleaned in {"LONG", "SHORT", "BUY", "SELL", "BULLISH", "BEARISH"}:
+        return False
+    return bool(re.fullmatch(r"[A-Z]{2,15}(?:/USDT|USDT)?", cleaned))
+
+
+def looks_like_interval_token(token: str) -> bool:
+    return bool(re.fullmatch(r"\d+\s*[mhdw]", token.strip(), re.IGNORECASE))
+
+
+def extract_numeric_values(text: str) -> List[float]:
+    values: List[float] = []
+    for match in re.findall(r"\d[\d,]*(?:\.\d+)?", text):
+        values.append(float(match.replace(",", "")))
+    return values
+
+
+def extract_labeled_segment(text: str, label_pattern: str) -> str:
+    pattern = rf"\b(?:{label_pattern})\b\s*[:=\-]?\s*(.*?){USER_SIGNAL_FIELD_LOOKAHEAD}"
+    match = re.search(pattern, text, flags=re.IGNORECASE | re.DOTALL)
+    if not match:
+        return ""
+    return match.group(1).strip(" \n\r\t-")
+
+
+def detect_symbol_from_text(text: str, config: Config) -> str:
+    labeled = extract_labeled_segment(text, r"PAIR|SYMBOL|COIN")
+    if labeled:
+        candidate = detect_symbol_from_text(labeled, config)
+        if candidate:
+            return candidate
+
+    slash_match = re.search(r"\b([A-Z]{2,15})\s*/\s*USDT\b", text)
+    if slash_match:
+        return f"{slash_match.group(1)}USDT"
+
+    full_match = re.search(r"\b([A-Z]{2,15}USDT)\b", text)
+    if full_match:
+        return full_match.group(1)
+
+    for configured_symbol in config.symbols:
+        if configured_symbol.endswith("USDT"):
+            base_symbol = configured_symbol[:-4]
+            if re.search(rf"\b{re.escape(base_symbol)}\b", text):
+                return configured_symbol
+
+    return ""
+
+
+def detect_interval_from_text(text: str) -> str:
+    labeled = extract_labeled_segment(text, r"TIMEFRAME|TF")
+    if labeled:
+        candidate = detect_interval_from_text(labeled)
+        if candidate:
+            return candidate
+
+    match = re.search(r"\b(\d+)\s*([mhdw])\b", text, flags=re.IGNORECASE)
+    if not match:
+        return ""
+    return f"{match.group(1)}{match.group(2).lower()}"
+
+
+def detect_side_from_text(text: str) -> str:
+    labeled = extract_labeled_segment(text, r"SIDE")
+    search_text = labeled or text
+    has_long = bool(re.search(r"\b(LONG|BUY|BULLISH)\b", search_text))
+    has_short = bool(re.search(r"\b(SHORT|SELL|BEARISH)\b", search_text))
+
+    if has_long and has_short:
+        raise ValueError("Both LONG and SHORT found. Please send only one side.")
+    if has_long:
+        return "LONG"
+    if has_short:
+        return "SHORT"
+    return ""
+
+
+def extract_entry_range(text: str) -> Tuple[Optional[float], Optional[float], List[str]]:
+    segment = extract_labeled_segment(text, r"ENTRY(?:\s+ZONE)?|BUY\s+ZONE|SELL\s+ZONE")
+    if not segment:
+        return None, None, []
+
+    numbers = extract_numeric_values(segment)
+    if not numbers:
+        return None, None, []
+
+    notes: List[str] = []
+    if len(numbers) == 1:
+        return numbers[0], numbers[0], notes
+
+    entry_low = numbers[0]
+    entry_high = numbers[1]
+    if entry_low > entry_high:
+        entry_low, entry_high = entry_high, entry_low
+        notes.append("Entry range reordered low-to-high.")
+    return entry_low, entry_high, notes
+
+
+def extract_stop_loss(text: str) -> Optional[float]:
+    segment = extract_labeled_segment(text, r"STOP(?:\s+LOSS)?|SL")
+    if not segment:
+        return None
+
+    numbers = extract_numeric_values(segment)
+    return numbers[0] if numbers else None
+
+
+def extract_take_profits(text: str) -> List[float]:
+    take_profits: List[float] = []
+
+    for index in range(1, 4):
+        segment = extract_labeled_segment(text, rf"TP\s*{index}|TARGET\s*{index}")
+        if not segment:
+            continue
+        numbers = extract_numeric_values(segment)
+        if numbers:
+            take_profits.append(numbers[0])
+
+    if take_profits:
+        return take_profits
+
+    targets_segment = extract_labeled_segment(text, r"TARGETS?|TPS?")
+    if not targets_segment:
+        return []
+
+    return extract_numeric_values(targets_segment)[:3]
+
+
+def infer_side_from_levels(
+    entry_low: Optional[float],
+    entry_high: Optional[float],
+    stop_loss: Optional[float],
+    take_profits: List[float],
+) -> str:
+    if entry_low is None or entry_high is None or stop_loss is None or not take_profits:
+        return ""
+
+    if stop_loss < entry_low and all(tp > entry_high for tp in take_profits):
+        return "LONG"
+    if stop_loss > entry_high and all(tp < entry_low for tp in take_profits):
+        return "SHORT"
+    return ""
+
+
+def resolve_user_signal_value(field_name: str, detected: str, default: str) -> str:
+    if detected and default and detected != default:
+        raise ValueError(f"{field_name} mismatch. Command and signal text do not match.")
+    return detected or default
+
+
+def parse_user_signal_text(
+    text: str,
+    config: Config,
+    default_symbol: str = "",
+    default_interval: str = "",
+    default_side: str = "",
+) -> UserSignalInput:
+    normalized_text = normalize_user_signal_text(text)
+    notes: List[str] = []
+
+    symbol = resolve_user_signal_value(
+        "Pair",
+        detect_symbol_from_text(normalized_text, config),
+        normalize_symbol_token(default_symbol) if default_symbol else "",
+    )
+    interval = resolve_user_signal_value(
+        "Timeframe",
+        detect_interval_from_text(normalized_text),
+        normalize_interval_token(default_interval) if default_interval else "",
+    )
+    side = resolve_user_signal_value(
+        "Side",
+        detect_side_from_text(normalized_text),
+        default_side.strip().upper(),
+    )
+    entry_low, entry_high, entry_notes = extract_entry_range(normalized_text)
+    stop_loss = extract_stop_loss(normalized_text)
+    take_profits = extract_take_profits(normalized_text)
+    notes.extend(entry_notes)
+
+    inferred_side = infer_side_from_levels(entry_low, entry_high, stop_loss, take_profits)
+    if inferred_side:
+        if side and side != inferred_side:
+            raise ValueError("Side conflicts with entry/SL/TP structure.")
+        if not side:
+            side = inferred_side
+            notes.append(f"Side inferred from levels as {side}.")
+
+    if not symbol:
+        raise ValueError("Pair missing. Use BTCUSDT or BTC/USDT.")
+    if not interval:
+        raise ValueError("Timeframe missing. Use 15m, 1h, or 4h.")
+    interval_to_milliseconds(interval)
+
+    return UserSignalInput(
+        symbol=symbol,
+        interval=interval,
+        side=side,
+        entry_low=entry_low,
+        entry_high=entry_high,
+        stop_loss=stop_loss,
+        take_profits=take_profits,
+        notes=notes,
+        raw_text=text,
+    )
+
+
+def parse_user_signal_command_args(args: List[str], config: Config) -> UserSignalInput:
+    if not args:
+        raise ValueError("Signal input missing.")
+
+    raw_text = " ".join(args)
+    default_symbol = ""
+    default_interval = ""
+    default_side = ""
+    remaining_text = raw_text
+
+    if len(args) >= 2 and looks_like_symbol_token(args[0]) and looks_like_interval_token(args[1]):
+        default_symbol = normalize_symbol_token(args[0])
+        default_interval = normalize_interval_token(args[1])
+        remaining_text = " ".join(args[2:])
+
+        if len(args) >= 3 and args[2].strip().upper() in {"LONG", "SHORT"}:
+            default_side = args[2].strip().upper()
+            remaining_text = " ".join(args[3:])
+
+    return parse_user_signal_text(
+        remaining_text or raw_text,
+        config,
+        default_symbol=default_symbol,
+        default_interval=default_interval,
+        default_side=default_side,
+    )
+
+
+def format_user_signal_entry(signal: UserSignalInput) -> str:
+    if signal.entry_low is None or signal.entry_high is None:
+        return "-"
+    if abs(signal.entry_low - signal.entry_high) < 1e-9:
+        return format_price(signal.entry_low)
+    return f"{format_price(signal.entry_low)} - {format_price(signal.entry_high)}"
+
+
+def format_normalized_user_signal_lines(signal: UserSignalInput) -> List[str]:
+    lines = [
+        f"PAIR: {signal.symbol}",
+        f"TIMEFRAME: {signal.interval}",
+        f"SIDE: {signal.side or '-'}",
+        f"ENTRY: {format_user_signal_entry(signal)}",
+        f"SL: {format_price(signal.stop_loss) if signal.stop_loss is not None else '-'}",
+    ]
+
+    for index in range(3):
+        tp_label = f"TP{index + 1}"
+        if index < len(signal.take_profits):
+            lines.append(f"{tp_label}: {format_price(signal.take_profits[index])}")
+        else:
+            lines.append(f"{tp_label}: -")
+
+    return lines
+
+
+def assess_user_signal_structure(signal: UserSignalInput) -> Tuple[str, str]:
+    notes = list(signal.notes)
+    missing_fields: List[str] = []
+    issues: List[str] = []
+
+    if not signal.side:
+        missing_fields.append("SIDE")
+    if signal.entry_low is None or signal.entry_high is None:
+        missing_fields.append("ENTRY")
+    if signal.stop_loss is None:
+        missing_fields.append("SL")
+    if len(signal.take_profits) < 3:
+        for index in range(len(signal.take_profits) + 1, 4):
+            missing_fields.append(f"TP{index}")
+
+    if signal.side == "LONG" and signal.entry_low is not None and signal.entry_high is not None:
+        if signal.stop_loss is not None and signal.stop_loss >= signal.entry_low:
+            issues.append("LONG signal-e SL entry-r niche hote hobe.")
+        if signal.take_profits:
+            if any(tp <= signal.entry_high for tp in signal.take_profits):
+                issues.append("LONG signal-e shob TP entry-r upore thakte hobe.")
+            if any(curr <= prev for prev, curr in zip(signal.take_profits, signal.take_profits[1:])):
+                issues.append("LONG TP order ascending hote hobe.")
+
+    if signal.side == "SHORT" and signal.entry_low is not None and signal.entry_high is not None:
+        if signal.stop_loss is not None and signal.stop_loss <= signal.entry_high:
+            issues.append("SHORT signal-e SL entry-r upore hote hobe.")
+        if signal.take_profits:
+            if any(tp >= signal.entry_low for tp in signal.take_profits):
+                issues.append("SHORT signal-e shob TP entry-r niche thakte hobe.")
+            if any(curr >= prev for prev, curr in zip(signal.take_profits, signal.take_profits[1:])):
+                issues.append("SHORT TP order descending hote hobe.")
+
+    if issues:
+        notes.extend(issues)
+        return "NEED FIX", " | ".join(notes)
+
+    if missing_fields:
+        notes.append(f"Missing fields: {', '.join(missing_fields)}.")
+        if not signal.side:
+            notes.append("Bot will compare both LONG and SHORT.")
+        return "PARTIAL", " | ".join(notes)
+
+    notes.append("Signal normalized successfully.")
+    return "OK", " | ".join(notes)
+
+
 def build_user_signal_check_message(
     base_config: Config,
     symbol: str,
     interval: str,
     requested_side: Optional[str],
+    parsed_signal: Optional[UserSignalInput] = None,
+    format_verdict: str = "",
+    format_note: str = "",
 ) -> str:
     symbol = symbol.strip().upper()
     interval = interval.strip()
@@ -2600,6 +3001,15 @@ def build_user_signal_check_message(
     best_side, best_score, quality, note = classify_signal_checker_result(analysis, interval_config)
     current_price = candles[-1].close
     watch_threshold = max(interval_config.min_signal_score - interval_config.watch_alert_score_gap, 54)
+    normalized_section = ""
+
+    if parsed_signal:
+        normalized_lines = "\n".join(format_normalized_user_signal_lines(parsed_signal))
+        normalized_section = (
+            f"Normalized Signal:\n{normalized_lines}\n\n"
+            f"Format Verdict: {format_verdict or 'PARTIAL'}\n"
+            f"Format Note: {format_note or 'Signal parsed.'}\n\n"
+        )
 
     if side in {"LONG", "SHORT"}:
         requested_score = analysis.long_score if side == "LONG" else analysis.short_score
@@ -2620,6 +3030,7 @@ def build_user_signal_check_message(
 
         return (
             "USER SIGNAL CHECK\n\n"
+            f"{normalized_section}"
             f"Pair: {symbol}\n"
             f"Timeframe: {interval}\n"
             f"User Side: {side}\n"
@@ -2639,6 +3050,7 @@ def build_user_signal_check_message(
 
     return (
         "USER SIGNAL CHECK\n\n"
+        f"{normalized_section}"
         f"Pair: {symbol}\n"
         f"Timeframe: {interval}\n"
         f"Current Price: {format_price(current_price)}\n"
@@ -2729,7 +3141,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "Commands:\n"
         "/status - live bot summary\n"
         "/checksignal - score check, good or bad\n"
-        "/usersignal BTCUSDT 15m LONG - user signal judge\n"
+        "/usersignal - send a structured or free-form signal\n"
         "/market - current market condition\n"
         "/accuracy - real accuracy tracker\n"
         "/active - open mentor trades\n"
@@ -2771,50 +3183,85 @@ async def checksignal_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.effective_message.reply_text(message)
 
 
-async def usersignal_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def reply_with_user_signal_check(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    parsed_signal: UserSignalInput,
+) -> int:
     config: Config = context.application.bot_data["config"]
-    args = context.args
-
-    if len(args) < 2:
-        if update.effective_message:
-            await update.effective_message.reply_text(
-                "Use: /usersignal BTCUSDT 15m LONG\n"
-                "Or: /usersignal ETHUSDT 1h"
-            )
-        return
-
-    symbol = args[0]
-    interval = args[1]
-    requested_side = args[2] if len(args) >= 3 else None
-
     if update.effective_message:
         await update.effective_message.reply_text("Checking your signal...")
+
+    structure_verdict, structure_note = assess_user_signal_structure(parsed_signal)
 
     try:
         message = await asyncio.to_thread(
             build_user_signal_check_message,
             config,
-            symbol,
-            interval,
-            requested_side,
+            parsed_signal.symbol,
+            parsed_signal.interval,
+            parsed_signal.side or None,
+            parsed_signal,
+            structure_verdict,
+            structure_note,
         )
-    except ValueError as exc:
-        if update.effective_message:
-            await update.effective_message.reply_text(f"Invalid input: {exc}")
-        return
     except requests.RequestException as exc:
         LOGGER.warning("User signal check failed due to network/API error: %s", exc)
         if update.effective_message:
             await update.effective_message.reply_text(f"User signal check failed: {exc}")
-        return
+        return ConversationHandler.END
     except Exception as exc:
         LOGGER.exception("User signal check crashed: %s", exc)
         if update.effective_message:
             await update.effective_message.reply_text(f"User signal check crashed: {exc}")
-        return
+        return ConversationHandler.END
 
     if update.effective_message:
         await update.effective_message.reply_text(message)
+    return ConversationHandler.END
+
+
+async def usersignal_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    config: Config = context.application.bot_data["config"]
+    args = context.args
+
+    if not args:
+        if update.effective_message:
+            await update.effective_message.reply_text(build_user_signal_help_message())
+        return USER_SIGNAL_INPUT
+
+    try:
+        parsed_signal = parse_user_signal_command_args(args, config)
+    except ValueError as exc:
+        if update.effective_message:
+            await update.effective_message.reply_text(
+                f"Invalid input: {exc}\n\n{build_user_signal_help_message()}"
+            )
+        return USER_SIGNAL_INPUT
+
+    return await reply_with_user_signal_check(update, context, parsed_signal)
+
+
+async def usersignal_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    config: Config = context.application.bot_data["config"]
+    text = update.effective_message.text if update.effective_message else ""
+
+    try:
+        parsed_signal = parse_user_signal_text(text, config)
+    except ValueError as exc:
+        if update.effective_message:
+            await update.effective_message.reply_text(
+                f"Invalid input: {exc}\n\n{build_user_signal_help_message()}"
+            )
+        return USER_SIGNAL_INPUT
+
+    return await reply_with_user_signal_check(update, context, parsed_signal)
+
+
+async def usersignal_cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if update.effective_message:
+        await update.effective_message.reply_text("User signal input cancelled.")
+    return ConversationHandler.END
 
 
 async def market_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2933,11 +3380,20 @@ def build_application(config: Config, state: Dict[str, object]) -> Application:
     application.bot_data["config"] = config
     application.bot_data["state"] = state
     application.bot_data["scan_lock"] = threading.Lock()
+    usersignal_handler = ConversationHandler(
+        entry_points=[CommandHandler("usersignal", usersignal_command)],
+        states={
+            USER_SIGNAL_INPUT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, usersignal_text_input)
+            ]
+        },
+        fallbacks=[CommandHandler("cancel", usersignal_cancel_command)],
+    )
 
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("status", status_command))
     application.add_handler(CommandHandler("checksignal", checksignal_command))
-    application.add_handler(CommandHandler("usersignal", usersignal_command))
+    application.add_handler(usersignal_handler)
     application.add_handler(CommandHandler("market", market_command))
     application.add_handler(CommandHandler("accuracy", accuracy_command))
     application.add_handler(CommandHandler("active", active_command))
