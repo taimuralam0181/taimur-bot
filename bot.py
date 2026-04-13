@@ -36,14 +36,14 @@ TP2_PARTIAL_PCT = 30
 TP3_PARTIAL_PCT = 30
 RESULT_EPSILON_R = 0.05
 DEFAULT_SYMBOLS = [
-    "ZECUSDT",
-    "ETHUSDT",
     "BTCUSDT",
+    "ETHUSDT",
+    "SOLUSDT",
 ]
 DEFAULT_INTERVALS = [
+    "1m",
+    "5m",
     "15m",
-    "1h",
-    "4h",
 ]
 USER_SIGNAL_INPUT = 1
 USER_SIGNAL_TEMPLATE = (
@@ -262,37 +262,37 @@ def load_config() -> Config:
         symbols=symbols,
         interval=intervals[0],
         intervals=intervals,
-        poll_seconds=int(os.getenv("BOT_POLL_SECONDS", "20")),
-        lookback_limit=int(os.getenv("BOT_LOOKBACK_LIMIT", "320")),
-        ema_fast_period=int(os.getenv("BOT_EMA_FAST", "50")),
-        ema_slow_period=int(os.getenv("BOT_EMA_SLOW", "200")),
+        poll_seconds=int(os.getenv("BOT_POLL_SECONDS", "15")),
+        lookback_limit=int(os.getenv("BOT_LOOKBACK_LIMIT", "260")),
+        ema_fast_period=int(os.getenv("BOT_EMA_FAST", "20")),
+        ema_slow_period=int(os.getenv("BOT_EMA_SLOW", "50")),
         rsi_period=int(os.getenv("BOT_RSI_PERIOD", "14")),
         atr_period=int(os.getenv("BOT_ATR_PERIOD", "14")),
-        sr_lookback=int(os.getenv("BOT_SR_LOOKBACK", "20")),
-        volume_period=int(os.getenv("BOT_VOLUME_PERIOD", "20")),
-        volume_spike_factor=float(os.getenv("BOT_VOLUME_SPIKE_FACTOR", "1.08")),
-        breakout_buffer_pct=float(os.getenv("BOT_BREAKOUT_BUFFER_PCT", "0.0010")),
-        cooldown_candles=int(os.getenv("BOT_COOLDOWN_CANDLES", "3")),
-        min_signal_score=int(os.getenv("BOT_MIN_SIGNAL_SCORE", "74")),
-        vip_signal_score=int(os.getenv("BOT_VIP_SIGNAL_SCORE", "86")),
-        normal_risk_pct=float(os.getenv("BOT_NORMAL_RISK_PCT", "0.5")),
-        vip_risk_pct=float(os.getenv("BOT_VIP_RISK_PCT", "0.8")),
-        normal_leverage=os.getenv("BOT_NORMAL_LEVERAGE", "3x-5x").strip(),
-        vip_leverage=os.getenv("BOT_VIP_LEVERAGE", "5x-8x").strip(),
+        sr_lookback=int(os.getenv("BOT_SR_LOOKBACK", "12")),
+        volume_period=int(os.getenv("BOT_VOLUME_PERIOD", "14")),
+        volume_spike_factor=float(os.getenv("BOT_VOLUME_SPIKE_FACTOR", "1.03")),
+        breakout_buffer_pct=float(os.getenv("BOT_BREAKOUT_BUFFER_PCT", "0.0005")),
+        cooldown_candles=int(os.getenv("BOT_COOLDOWN_CANDLES", "4")),
+        min_signal_score=int(os.getenv("BOT_MIN_SIGNAL_SCORE", "70")),
+        vip_signal_score=int(os.getenv("BOT_VIP_SIGNAL_SCORE", "82")),
+        normal_risk_pct=float(os.getenv("BOT_NORMAL_RISK_PCT", "0.35")),
+        vip_risk_pct=float(os.getenv("BOT_VIP_RISK_PCT", "0.55")),
+        normal_leverage=os.getenv("BOT_NORMAL_LEVERAGE", "5x-8x").strip(),
+        vip_leverage=os.getenv("BOT_VIP_LEVERAGE", "8x-12x").strip(),
         margin_mode=os.getenv("BOT_MARGIN_MODE", "Isolated").strip() or "Isolated",
         require_higher_timeframe_confirmation=parse_bool_env(
             "BOT_REQUIRE_HTF_CONFIRMATION", True
         ),
         watch_alert_enabled=parse_bool_env("BOT_WATCH_ALERT_ENABLED", True),
         watch_alert_score_gap=int(os.getenv("BOT_WATCH_ALERT_SCORE_GAP", "10")),
-        max_extension_atr=float(os.getenv("BOT_MAX_EXTENSION_ATR", "2.0")),
-        atr_stop_multiplier=float(os.getenv("BOT_ATR_STOP_MULTIPLIER", "1.2")),
-        tp_one_r=float(os.getenv("BOT_TP1_R", "1.5")),
-        tp_two_r=float(os.getenv("BOT_TP2_R", "2.5")),
-        tp_three_r=float(os.getenv("BOT_TP3_R", "4.0")),
+        max_extension_atr=float(os.getenv("BOT_MAX_EXTENSION_ATR", "1.6")),
+        atr_stop_multiplier=float(os.getenv("BOT_ATR_STOP_MULTIPLIER", "1.0")),
+        tp_one_r=float(os.getenv("BOT_TP1_R", "1.0")),
+        tp_two_r=float(os.getenv("BOT_TP2_R", "1.8")),
+        tp_three_r=float(os.getenv("BOT_TP3_R", "2.8")),
         hourly_update_enabled=parse_bool_env("BOT_HOURLY_UPDATE_ENABLED", True),
         hourly_update_interval_minutes=int(os.getenv("BOT_HOURLY_UPDATE_MINUTES", "60")),
-        hourly_update_timeframe=os.getenv("BOT_HOURLY_UPDATE_TIMEFRAME", "15m").strip() or "15m",
+        hourly_update_timeframe=os.getenv("BOT_HOURLY_UPDATE_TIMEFRAME", "5m").strip() or "5m",
         daily_report_hour=int(os.getenv("BOT_DAILY_REPORT_HOUR", "23")),
         state_file=Path(os.getenv("BOT_STATE_FILE", str(STATE_FILE))).expanduser(),
     )
@@ -1840,9 +1840,8 @@ def manage_active_trade(
 def confirmation_interval(interval: str) -> Optional[str]:
     mapping = {
         "1m": "5m",
-        "3m": "15m",
+        "3m": "5m",
         "5m": "15m",
-        "15m": "1h",
         "30m": "4h",
         "1h": "4h",
         "2h": "4h",
@@ -3073,6 +3072,7 @@ def build_status_message(config: Config, state: Dict[str, object]) -> str:
 
     return (
         "Bot Status\n\n"
+        "Profile: Scalping\n"
         f"Symbols: {', '.join(config.symbols)}\n"
         f"Intervals: {', '.join(config.intervals)}\n"
         f"Poll Seconds: {config.poll_seconds}\n"
@@ -3132,6 +3132,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     config: Config = context.application.bot_data["config"]
     message = (
         "Bot is running.\n\n"
+        "Profile: Scalping\n"
         f"Symbols: {', '.join(config.symbols)}\n"
         f"Intervals: {', '.join(config.intervals)}\n"
         f"Poll Seconds: {config.poll_seconds}\n"
