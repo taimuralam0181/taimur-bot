@@ -156,6 +156,24 @@
                             <label for="checkerEntry">Entry Price / Zone</label>
                             <input id="checkerEntry" type="text" placeholder="Example: 84500 or 84500-84750">
                         </div>
+                        <div class="checker-quick-grid checker-risk-grid">
+                            <div class="selector-wrap">
+                                <label for="checkerStopLoss">Stop Loss</label>
+                                <input id="checkerStopLoss" type="text" placeholder="Example: 83900">
+                            </div>
+                            <div class="selector-wrap">
+                                <label for="checkerTp1">TP1</label>
+                                <input id="checkerTp1" type="text" placeholder="Example: 85100">
+                            </div>
+                            <div class="selector-wrap">
+                                <label for="checkerTp2">TP2</label>
+                                <input id="checkerTp2" type="text" placeholder="Optional">
+                            </div>
+                            <div class="selector-wrap">
+                                <label for="checkerTp3">TP3</label>
+                                <input id="checkerTp3" type="text" placeholder="Optional">
+                            </div>
+                        </div>
                         <details class="advanced-box">
                             <summary>Advanced Input</summary>
                             <textarea id="signalInput" rows="8" placeholder="{{ payload.user_signal_checker.help }}"></textarea>
@@ -170,7 +188,7 @@
                         <div class="checker-result checker-result-neutral">
                             <p class="checker-result-kicker">Ready</p>
                             <h4>Signal verdict ekhane dekhabe</h4>
-                            <p class="checker-result-summary">Pair, timeframe, side, ar entry dile bot clean verdict dibe.</p>
+                            <p class="checker-result-summary">Pair, timeframe, side, entry, SL, TP dile bot clean verdict dibe.</p>
                             <div class="checker-result-points">
                                 <span>GOOD / WATCH / BAD</span>
                                 <span>LONG / SHORT / NO TRADE</span>

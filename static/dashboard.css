@@ -484,6 +484,10 @@ textarea {
     margin-bottom: 14px;
 }
 
+.checker-risk-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
 .checker-side-group {
     display: grid;
     gap: 10px;
@@ -671,6 +675,10 @@ td {
 
     .checker-quick-grid {
         grid-template-columns: 1fr;
+    }
+
+    .checker-risk-grid {
+        grid-template-columns: 1fr 1fr;
     }
 
     .checker-side-buttons {

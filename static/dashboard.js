@@ -343,7 +343,16 @@ function buildQuickSignalText() {
   const timeframe = document.getElementById("checkerTimeframe").value || "5m";
   const side = state.checkerSide || "LONG";
   const entry = document.getElementById("checkerEntry").value.trim();
-  return [`PAIR: ${pair}`, `TIMEFRAME: ${timeframe}`, `SIDE: ${side}`, `ENTRY: ${entry}`].join("\n");
+  const stopLoss = document.getElementById("checkerStopLoss").value.trim();
+  const tp1 = document.getElementById("checkerTp1").value.trim();
+  const tp2 = document.getElementById("checkerTp2").value.trim();
+  const tp3 = document.getElementById("checkerTp3").value.trim();
+  const lines = [`PAIR: ${pair}`, `TIMEFRAME: ${timeframe}`, `SIDE: ${side}`, `ENTRY: ${entry}`];
+  if (stopLoss) lines.push(`SL: ${stopLoss}`);
+  if (tp1) lines.push(`TP1: ${tp1}`);
+  if (tp2) lines.push(`TP2: ${tp2}`);
+  if (tp3) lines.push(`TP3: ${tp3}`);
+  return lines.join("\n");
 }
 
 function renderCheckerHelp(help) {
@@ -353,7 +362,7 @@ function renderCheckerHelp(help) {
     <div class="checker-result checker-result-neutral">
       <p class="checker-result-kicker">How To Use</p>
       <h4>Quick form diye signal check koro</h4>
-      <p class="checker-result-summary">Pair, timeframe, side, ar entry dile bot market-er sathe compare kore clean verdict dibe.</p>
+      <p class="checker-result-summary">Pair, timeframe, side, entry, SL, TP dile bot market-er sathe compare kore clean verdict dibe.</p>
       <div class="checker-result-points">
         <span>GOOD = entry possible</span>
         <span>WATCH = wait koro</span>
