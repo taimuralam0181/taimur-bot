@@ -101,6 +101,10 @@ h3 {
     gap: 8px;
 }
 
+.selector-wrap.compact {
+    min-width: 120px;
+}
+
 select,
 textarea,
 .action-btn {
@@ -204,6 +208,14 @@ textarea {
     border-radius: 22px;
 }
 
+.panel-header {
+    display: flex;
+    justify-content: space-between;
+    gap: 14px;
+    align-items: end;
+    margin-bottom: 12px;
+}
+
 .hero-panel,
 .overview-grid,
 .wide {
@@ -251,6 +263,26 @@ textarea {
 .hero-copy {
     max-width: 760px;
     color: #c0c7d4;
+}
+
+.chart-meta {
+    margin: 0 0 10px;
+    color: var(--muted);
+    font-size: 0.9rem;
+}
+
+.chart-wrap {
+    min-height: 340px;
+    border-radius: 16px;
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(255, 255, 255, 0.01));
+    overflow: hidden;
+}
+
+#candlesChart {
+    width: 100%;
+    height: 340px;
+    display: block;
 }
 
 .hero-badges {

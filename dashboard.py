@@ -1,5 +1,6 @@
 import json
 import os
+import sqlite3
 from datetime import datetime, time, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -15,6 +16,9 @@ import bot as trading_bot
 
 ROOT_DIR = Path(__file__).resolve().parent
 STATE_FILE = Path(os.getenv("BOT_STATE_FILE", str(ROOT_DIR / "bot_state.json"))).expanduser()
+HISTORY_DB_FILE = Path(
+    os.getenv("BOT_HISTORY_DB_FILE", str(ROOT_DIR / "dashboard_history.db"))
+).expanduser()
 TEMPLATES_DIR = ROOT_DIR / "templates"
 STATIC_DIR = ROOT_DIR / "static"
 
@@ -50,6 +54,46 @@ def load_state() -> Dict[str, Any]:
         return {}
 
 
+def get_db_connection() -> sqlite3.Connection:
+    connection = sqlite3.connect(HISTORY_DB_FILE)
+    connection.row_factory = sqlite3.Row
+    return connection
+
+
+def init_history_db() -> None:
+    with get_db_connection() as connection:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS signal_history (
+                signal_key TEXT PRIMARY KEY,
+                symbol TEXT NOT NULL,
+                interval TEXT NOT NULL,
+                side TEXT,
+                tier TEXT,
+                grade TEXT,
+                score INTEGER,
+                entry REAL,
+                stop_loss REAL,
+                status TEXT NOT NULL,
+                candle_time INTEGER,
+                opened_at TEXT,
+                closed_at TEXT,
+                close_reason TEXT,
+                result_r REAL,
+                exit_price REAL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_signal_history_status_updated ON signal_history(status, updated_at DESC)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_signal_history_symbol_interval ON signal_history(symbol, interval, updated_at DESC)"
+        )
+
+
 def format_candle_time(timestamp_ms: Any) -> str:
     if not timestamp_ms:
         return "-"
@@ -68,6 +112,12 @@ def format_number(value: Any, precision: int = 2) -> str:
         return f"{float(value):.{precision}f}"
     except (TypeError, ValueError):
         return "0.00"
+
+
+def format_optional_number(value: Any, precision: int = 2) -> str:
+    if value is None:
+        return "-"
+    return format_number(value, precision)
 
 
 def format_percent(value: Any) -> str:
@@ -152,7 +202,7 @@ def fetch_market_bundle(symbol: str, interval: str) -> Dict[str, Any]:
         "change_text": format_percent(pct_change),
         "overview": overview,
         "analysis": analysis,
-        "candles": candles[-36:],
+        "candles": candles[-160:],
     }
 
 
@@ -240,12 +290,194 @@ def build_signal_grid(state: Dict[str, Any]) -> List[Dict[str, Any]]:
     return rows
 
 
-def build_recent_closures(state: Dict[str, Any]) -> List[Dict[str, Any]]:
+def sync_signal_history_database(state: Dict[str, Any]) -> None:
+    symbols_state = state.get("symbols", {})
     performance_state = state.get("performance", {})
     recent_closed = performance_state.get("recent_closed", []) if isinstance(performance_state, dict) else []
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    if not isinstance(symbols_state, dict):
+        symbols_state = {}
     if not isinstance(recent_closed, list):
-        return []
-    return list(reversed(recent_closed[-12:]))
+        recent_closed = []
+
+    with get_db_connection() as connection:
+        for symbol, symbol_state in symbols_state.items():
+            intervals_state = symbol_state.get("intervals", {}) if isinstance(symbol_state, dict) else {}
+            if not isinstance(intervals_state, dict):
+                continue
+
+            for interval, interval_state in intervals_state.items():
+                if not isinstance(interval_state, dict):
+                    continue
+                trade = interval_state.get("active_trade")
+                if not isinstance(trade, dict):
+                    continue
+
+                side = str(trade.get("side", "-") or "-")
+                candle_time = int(trade.get("candle_time", 0) or 0)
+                signal_key = f"{symbol}|{interval}|{side}|{candle_time or trade.get('opened_at', '-')}"
+
+                connection.execute(
+                    """
+                    INSERT INTO signal_history (
+                        signal_key, symbol, interval, side, tier, grade, score, entry, stop_loss,
+                        status, candle_time, opened_at, closed_at, close_reason, result_r, exit_price,
+                        created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?, NULL, NULL, ?, NULL, ?, ?)
+                    ON CONFLICT(signal_key) DO UPDATE SET
+                        tier = excluded.tier,
+                        grade = excluded.grade,
+                        score = excluded.score,
+                        entry = excluded.entry,
+                        stop_loss = excluded.stop_loss,
+                        status = 'ACTIVE',
+                        opened_at = excluded.opened_at,
+                        result_r = excluded.result_r,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        signal_key,
+                        symbol,
+                        interval,
+                        side,
+                        str(trade.get("tier", "-") or "-"),
+                        str(trade.get("grade", "-") or "-"),
+                        int(trade.get("score", 0) or 0),
+                        float(trade.get("entry", 0.0) or 0.0),
+                        float(trade.get("current_stop_loss", trade.get("stop_loss", 0.0)) or 0.0),
+                        candle_time,
+                        str(trade.get("opened_at", "-") or "-"),
+                        float(trade.get("realized_r", 0.0) or 0.0),
+                        now_iso,
+                        now_iso,
+                    ),
+                )
+
+        for item in recent_closed:
+            if not isinstance(item, dict):
+                continue
+
+            symbol = str(item.get("symbol", "-") or "-")
+            interval = str(item.get("interval", "-") or "-")
+            side = str(item.get("side", "-") or "-")
+            closed_at = str(item.get("closed_at", "-") or "-")
+            matched = connection.execute(
+                """
+                SELECT signal_key FROM signal_history
+                WHERE symbol = ? AND interval = ? AND side = ? AND status != 'CLOSED'
+                ORDER BY COALESCE(candle_time, 0) DESC, updated_at DESC
+                LIMIT 1
+                """,
+                (symbol, interval, side),
+            ).fetchone()
+
+            signal_key = (
+                str(matched["signal_key"])
+                if matched
+                else f"CLOSED|{symbol}|{interval}|{side}|{closed_at}"
+            )
+
+            connection.execute(
+                """
+                INSERT INTO signal_history (
+                    signal_key, symbol, interval, side, tier, grade, score, entry, stop_loss,
+                    status, candle_time, opened_at, closed_at, close_reason, result_r, exit_price,
+                    created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, 'CLOSED', 0, NULL, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(signal_key) DO UPDATE SET
+                    status = 'CLOSED',
+                    tier = excluded.tier,
+                    closed_at = excluded.closed_at,
+                    close_reason = excluded.close_reason,
+                    result_r = excluded.result_r,
+                    exit_price = excluded.exit_price,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    signal_key,
+                    symbol,
+                    interval,
+                    side,
+                    str(item.get("tier", "-") or "-"),
+                    "-",
+                    0,
+                    closed_at,
+                    str(item.get("close_reason", "-") or "-"),
+                    float(item.get("result_r", 0.0) or 0.0),
+                    float(item.get("exit_price", 0.0) or 0.0),
+                    now_iso,
+                    now_iso,
+                ),
+            )
+
+
+def load_signal_history(limit: int = 20) -> List[Dict[str, Any]]:
+    with get_db_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT *
+            FROM signal_history
+            ORDER BY
+                CASE WHEN status = 'ACTIVE' THEN 0 ELSE 1 END,
+                COALESCE(candle_time, 0) DESC,
+                updated_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+
+    history: List[Dict[str, Any]] = []
+    for row in rows:
+        history.append(
+            {
+                "signal_key": row["signal_key"],
+                "symbol": row["symbol"],
+                "interval": row["interval"],
+                "side": row["side"] or "-",
+                "tier": row["tier"] or "-",
+                "grade": row["grade"] or "-",
+                "score": row["score"] or 0,
+                "entry": format_optional_number(row["entry"]),
+                "stop_loss": format_optional_number(row["stop_loss"]),
+                "status": row["status"],
+                "opened_at": row["opened_at"] or "-",
+                "closed_at": row["closed_at"] or "-",
+                "close_reason": row["close_reason"] or "-",
+                "result_r": format_number(row["result_r"]) if row["result_r"] is not None else "-",
+                "exit_price": format_optional_number(row["exit_price"]),
+            }
+        )
+    return history
+
+
+def build_recent_closures_from_db(limit: int = 12) -> List[Dict[str, Any]]:
+    with get_db_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT symbol, interval, side, tier, result_r, exit_price, closed_at, close_reason
+            FROM signal_history
+            WHERE status = 'CLOSED'
+            ORDER BY updated_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    return [
+        {
+            "symbol": row["symbol"],
+            "interval": row["interval"],
+            "side": row["side"] or "-",
+            "tier": row["tier"] or "-",
+            "result_r": float(row["result_r"] or 0.0),
+            "exit_price": format_optional_number(row["exit_price"]),
+            "closed_at": row["closed_at"] or "-",
+            "close_reason": row["close_reason"] or "-",
+        }
+        for row in rows
+    ]
 
 
 def build_accuracy_panels(state: Dict[str, Any]) -> Dict[str, List[Dict[str, str]]]:
@@ -353,9 +585,10 @@ def build_session_status() -> List[Dict[str, str]]:
 
 def build_candles_chart_data(candles: List[Any]) -> List[Dict[str, Any]]:
     data: List[Dict[str, Any]] = []
-    for candle in candles[-30:]:
+    for candle in candles[-72:]:
         data.append(
             {
+                "open_time": candle.open_time,
                 "time": format_candle_time(candle.open_time),
                 "open": candle.open,
                 "high": candle.high,
@@ -376,7 +609,7 @@ def build_win_loss_chart(state: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 
 def build_signal_history_chart(state: Dict[str, Any]) -> List[Dict[str, Any]]:
-    items = build_recent_closures(state)
+    items = build_recent_closures_from_db(limit=16)
     chart: List[Dict[str, Any]] = []
     for item in items:
         chart.append(
@@ -395,8 +628,23 @@ def build_user_signal_help_payload() -> Dict[str, str]:
     }
 
 
+def build_chart_payload(symbol: str, interval: str) -> Dict[str, Any]:
+    bundle = fetch_market_bundle(symbol, interval)
+    return {
+        "symbol": symbol,
+        "interval": interval,
+        "price": bundle["price_text"],
+        "change": bundle["change_text"],
+        "trend": bundle["overview"].trend,
+        "breakout": bundle["overview"].breakout_check,
+        "verdict": bundle["overview"].entry_rule,
+        "candles": build_candles_chart_data(bundle["candles"]),
+    }
+
+
 def build_dashboard_payload(selected_symbol: Optional[str] = None) -> Dict[str, Any]:
     state = load_state()
+    sync_signal_history_database(state)
     symbols = parse_env_list("BOT_SYMBOLS", DEFAULT_SYMBOLS)
     intervals = parse_env_list("BOT_INTERVALS", DEFAULT_INTERVALS)
     selected = selected_symbol or symbols[0]
@@ -416,10 +664,11 @@ def build_dashboard_payload(selected_symbol: Optional[str] = None) -> Dict[str, 
         "signal_grid": signal_grid,
         "latest_signal": get_latest_real_signal(state),
         "fake_breakout_warning": build_fake_breakout_warning(bundle_15m),
-        "recent_closures": build_recent_closures(state),
+        "recent_closures": build_recent_closures_from_db(),
         "accuracy": build_accuracy_panels(state),
         "win_loss_chart": build_win_loss_chart(state),
         "signal_history_chart": build_signal_history_chart(state),
+        "signal_history": load_signal_history(limit=16),
         "session_status": build_session_status(),
         "market_cards": [
             {
@@ -441,7 +690,7 @@ def build_dashboard_payload(selected_symbol: Optional[str] = None) -> Dict[str, 
                 "momentum": bundle_15m["overview"].volume_momentum,
             },
         ],
-        "candles_chart": build_candles_chart_data(bundle_5m["candles"]),
+        "candles_chart": build_chart_payload(selected, "5m"),
         "user_signal_checker": build_user_signal_help_payload(),
     }
 
@@ -459,6 +708,16 @@ async def dashboard(request: Request, symbol: Optional[str] = Query(default=None
 @app.get("/api/dashboard", response_class=JSONResponse)
 async def dashboard_api(symbol: Optional[str] = Query(default=None)) -> JSONResponse:
     return JSONResponse(build_dashboard_payload(symbol))
+
+
+@app.get("/api/chart", response_class=JSONResponse)
+async def chart_api(
+    symbol: Optional[str] = Query(default=None),
+    interval: str = Query(default="5m"),
+) -> JSONResponse:
+    symbols = parse_env_list("BOT_SYMBOLS", DEFAULT_SYMBOLS)
+    selected_symbol = symbol or symbols[0]
+    return JSONResponse(build_chart_payload(selected_symbol, interval))
 
 
 @app.post("/api/check-user-signal", response_class=JSONResponse)
@@ -491,6 +750,9 @@ async def check_user_signal(payload: UserSignalCheckRequest) -> JSONResponse:
             "message": message,
         }
     )
+
+
+init_history_db()
 
 
 if __name__ == "__main__":

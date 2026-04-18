@@ -93,9 +93,14 @@
                 <div class="panel-header">
                     <div>
                         <p class="panel-kicker">Chart View</p>
-                        <h3>5m Candle Strip</h3>
+                        <h3>Live Candle Chart</h3>
+                    </div>
+                    <div class="selector-wrap compact">
+                        <label for="chartIntervalSelector">Chart TF</label>
+                        <select id="chartIntervalSelector"></select>
                     </div>
                 </div>
+                <p class="chart-meta" id="chartMeta">Loading chart...</p>
                 <div class="chart-wrap">
                     <svg id="candlesChart" viewBox="0 0 1000 340" preserveAspectRatio="none"></svg>
                 </div>
@@ -178,6 +183,16 @@
                     </div>
                 </div>
                 <div class="recent-list" id="recentClosures"></div>
+            </section>
+
+            <section class="panel">
+                <div class="panel-header">
+                    <div>
+                        <p class="panel-kicker">Persistent DB</p>
+                        <h3>Signal History</h3>
+                    </div>
+                </div>
+                <div class="recent-list" id="signalHistoryList"></div>
             </section>
 
             <section class="panel">

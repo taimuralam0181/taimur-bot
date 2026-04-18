@@ -3,6 +3,7 @@ const state = {
   autoRefresh: true,
   lastSignalSignature: "",
   refreshTimer: null,
+  chartInterval: "5m",
 };
 
 function renderPills(selectId, values, selected) {
@@ -178,6 +179,38 @@ function renderRecentClosures(items) {
     .join("");
 }
 
+function renderSignalHistory(items) {
+  const container = document.getElementById("signalHistoryList");
+  if (!items.length) {
+    container.innerHTML = `<article class="recent-card"><p class="metric-label">No persistent signal history yet.</p></article>`;
+    return;
+  }
+  container.innerHTML = items
+    .map(
+      (item) => {
+        const resultValue = Number(item.result_r);
+        const statusClass =
+          item.status === "ACTIVE" ? "positive" : Number.isFinite(resultValue) && resultValue >= 0 ? "positive" : "negative";
+        const tailText = item.status === "CLOSED" ? `${item.result_r}R` : item.opened_at;
+        return `
+        <article class="recent-card">
+          <div class="recent-top">
+            <span class="recent-symbol">${item.symbol} ${item.interval}</span>
+            <span class="${statusClass}">${item.status}</span>
+          </div>
+          <div class="recent-meta">
+            <span>${item.side}</span>
+            <span>${item.tier} ${item.grade}</span>
+            <span>Entry ${item.entry}</span>
+            <span>${tailText}</span>
+          </div>
+        </article>
+      `;
+      }
+    )
+    .join("");
+}
+
 function renderAccuracy(containerId, items) {
   const container = document.getElementById(containerId);
   if (!items.length) {
@@ -225,20 +258,31 @@ function renderBarChart(containerId, items) {
     .join("");
 }
 
-function renderCandles(candles) {
+function renderCandles(chartPayload) {
   const svg = document.getElementById("candlesChart");
+  const meta = document.getElementById("chartMeta");
+  const candles = chartPayload?.candles || [];
   if (!svg || !candles.length) return;
   const width = 1000;
   const height = 340;
-  const padding = 24;
+  const padding = 36;
   const candleWidth = (width - padding * 2) / candles.length;
   const highs = candles.map((c) => c.high);
   const lows = candles.map((c) => c.low);
   const max = Math.max(...highs);
   const min = Math.min(...lows);
   const scaleY = (value) => padding + ((max - value) / Math.max(max - min, 1e-9)) * (height - padding * 2);
+  const grid = Array.from({ length: 5 }, (_, index) => {
+    const y = padding + ((height - padding * 2) / 4) * index;
+    return `<line x1="${padding}" y1="${y}" x2="${width - padding}" y2="${y}" stroke="rgba(255,255,255,0.06)" stroke-width="1"></line>`;
+  }).join("");
+  const priceLabels = Array.from({ length: 5 }, (_, index) => {
+    const price = max - ((max - min) / 4) * index;
+    const y = padding + ((height - padding * 2) / 4) * index + 4;
+    return `<text x="${width - padding + 6}" y="${y}" fill="rgba(255,255,255,0.56)" font-size="11">${price.toFixed(2)}</text>`;
+  }).join("");
 
-  const markup = candles
+  const bodies = candles
     .map((candle, index) => {
       const x = padding + index * candleWidth + candleWidth / 2;
       const openY = scaleY(candle.open);
@@ -255,8 +299,18 @@ function renderCandles(candles) {
       `;
     })
     .join("");
+  const timeLabels = [candles[0], candles[Math.floor(candles.length / 2)], candles[candles.length - 1]]
+    .filter(Boolean)
+    .map((candle, index, list) => {
+      const x = index === 0 ? padding : index === list.length - 1 ? width - padding - 48 : width / 2 - 24;
+      return `<text x="${x}" y="${height - 10}" fill="rgba(255,255,255,0.56)" font-size="11">${candle.time}</text>`;
+    })
+    .join("");
 
-  svg.innerHTML = markup;
+  svg.innerHTML = `${grid}${bodies}${priceLabels}${timeLabels}`;
+  if (meta) {
+    meta.textContent = `${chartPayload.symbol} ${chartPayload.interval} | Price ${chartPayload.price} | ${chartPayload.trend} | ${chartPayload.breakout} | ${chartPayload.verdict}`;
+  }
 }
 
 function maybePlaySignalSound(payload) {
@@ -282,8 +336,10 @@ function renderCheckerHelp(help) {
 
 function render(payload) {
   state.payload = payload;
+  state.chartInterval = state.chartInterval || "5m";
   document.getElementById("heroTitle").textContent = `${payload.mode} - ${payload.selected_symbol}`;
   renderPills("pairSelector", payload.symbols || [], payload.selected_symbol);
+  renderPills("chartIntervalSelector", payload.intervals || [], state.chartInterval);
   renderTicker(payload.ticker_rows || []);
   renderOverview(payload.overview_cards || []);
   renderLatestSignal(payload.latest_signal || {});
@@ -292,6 +348,7 @@ function render(payload) {
   renderMarketCards(payload.market_cards || []);
   renderSignalGrid(payload.signal_grid || []);
   renderRecentClosures(payload.recent_closures || []);
+  renderSignalHistory(payload.signal_history || []);
   renderAccuracy("accuracyPairs", payload.accuracy?.by_symbol || []);
   renderAccuracy("accuracyIntervals", payload.accuracy?.by_interval || []);
   renderBarChart("winLossChart", payload.win_loss_chart || []);
@@ -308,8 +365,26 @@ async function refreshDashboard() {
     if (!response.ok) return;
     const payload = await response.json();
     render(payload);
+    await refreshChartOnly();
   } catch (error) {
     console.error("Dashboard refresh failed", error);
+  }
+}
+
+async function refreshChartOnly() {
+  try {
+    const symbol = document.getElementById("pairSelector").value || state.payload.selected_symbol;
+    const interval = document.getElementById("chartIntervalSelector").value || state.chartInterval || "5m";
+    state.chartInterval = interval;
+    const response = await fetch(
+      `/api/chart?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}`,
+      { cache: "no-store" }
+    );
+    if (!response.ok) return;
+    const payload = await response.json();
+    renderCandles(payload);
+  } catch (error) {
+    console.error("Chart refresh failed", error);
   }
 }
 
@@ -345,6 +420,7 @@ async function checkUserSignal() {
 
 document.getElementById("manualRefresh").addEventListener("click", refreshDashboard);
 document.getElementById("pairSelector").addEventListener("change", refreshDashboard);
+document.getElementById("chartIntervalSelector").addEventListener("change", refreshChartOnly);
 document.getElementById("autoRefreshToggle").addEventListener("change", (event) => {
   setAutoRefresh(event.target.checked);
 });
@@ -354,4 +430,5 @@ document.getElementById("pasteTemplateBtn").addEventListener("click", () => {
 });
 
 render(state.payload);
+refreshChartOnly();
 setAutoRefresh(true);
