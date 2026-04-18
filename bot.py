@@ -1276,6 +1276,9 @@ def record_closed_trade(
             "interval": config.interval,
             "side": trade["side"],
             "tier": trade["tier"],
+            "market_regime_key": str(trade.get("market_regime_key", "")),
+            "market_trend_bias": str(trade.get("market_trend_bias", "")),
+            "market_breakout": str(trade.get("market_breakout", "")),
             "result_r": round(realized_r, 4),
             "exit_price": round_price(exit_price),
             "closed_at": format_local_time(candle_time),
@@ -1303,6 +1306,25 @@ def format_accuracy_line(label: str, stats_bucket: Dict[str, object]) -> str:
         f"{int(stats_bucket.get('breakeven', 0))} | "
         f"{format_r_multiple(float(stats_bucket.get('total_r', 0.0) or 0.0))}"
     )
+
+
+def build_market_regime_key(overview: MarketOverview, side: str) -> str:
+    trend = overview.trend_bias
+    if overview.breakout_check.startswith("Real breakout"):
+        breakout = "REAL_BREAKOUT"
+    elif overview.breakout_check.startswith("Fake breakout"):
+        breakout = "FAKE_BREAKOUT"
+    else:
+        breakout = "NO_BREAKOUT"
+
+    if "Volume increasing" in overview.volume_momentum:
+        volume = "VOL_UP"
+    elif "Volume decreasing" in overview.volume_momentum:
+        volume = "VOL_DOWN"
+    else:
+        volume = "VOL_FLAT"
+
+    return f"{side}|{trend}|{breakout}|{volume}|{overview.entry_zone_side}"
 
 
 def calculate_adaptive_score_adjustment(
@@ -1372,6 +1394,51 @@ def calculate_adaptive_score_adjustment(
         return 0, f"Learning neutral from {trade_count} recent {side} trades"
     sign = "+" if bounded > 0 else ""
     return bounded, f"Learning bias {sign}{bounded} from {trade_count} recent {side} trades"
+
+
+def calculate_market_regime_adjustment(
+    state: Dict[str, object],
+    config: Config,
+    side: str,
+    overview: MarketOverview,
+) -> Tuple[int, str]:
+    performance_state = get_performance_state(state)
+    recent_closed = performance_state.get("recent_closed", [])
+    if not isinstance(recent_closed, list):
+        return 0, "No market memory yet"
+
+    current_key = build_market_regime_key(overview, side)
+    matched = [
+        item
+        for item in recent_closed
+        if isinstance(item, dict)
+        and str(item.get("symbol", "")) == config.symbol
+        and str(item.get("interval", "")) == config.interval
+        and str(item.get("side", "")) == side
+        and str(item.get("market_regime_key", "")) == current_key
+    ][-8:]
+
+    if len(matched) < 3:
+        return 0, "Not enough same-market examples"
+
+    total_r = sum(float(item.get("result_r", 0.0) or 0.0) for item in matched)
+    wins = sum(1 for item in matched if float(item.get("result_r", 0.0) or 0.0) > RESULT_EPSILON_R)
+    losses = sum(1 for item in matched if float(item.get("result_r", 0.0) or 0.0) < -RESULT_EPSILON_R)
+    average_r = total_r / max(len(matched), 1)
+    adjustment = 0
+
+    if losses >= wins + 2 and average_r < 0:
+        adjustment -= 4
+    elif wins >= losses + 2 and average_r > 0:
+        adjustment += 2
+
+    if "FAKE_BREAKOUT" in current_key and losses >= wins:
+        adjustment -= 2
+
+    if adjustment == 0:
+        return 0, f"Market memory neutral for {len(matched)} similar setups"
+    sign = "+" if adjustment > 0 else ""
+    return adjustment, f"Market memory {sign}{adjustment} on similar candle regime"
 
 
 def build_ranked_accuracy_lines(
@@ -2083,6 +2150,7 @@ def evaluate_long_setup(
     config: Config,
     higher_timeframe_trend: Optional[TrendSnapshot],
     higher_timeframe_overview: Optional[MarketOverview],
+    market_overview: MarketOverview,
     state: Optional[Dict[str, object]] = None,
 ) -> Tuple[int, Optional[Signal]]:
     last = candles[-1]
@@ -2165,6 +2233,15 @@ def evaluate_long_setup(
         adjustment, note = calculate_adaptive_score_adjustment(state, config, "LONG")
         score = max(0, min(100, score + adjustment))
         learning_note = note if adjustment != 0 else ""
+        regime_adjustment, regime_note = calculate_market_regime_adjustment(
+            state,
+            config,
+            "LONG",
+            market_overview,
+        )
+        score = max(0, min(100, score + regime_adjustment))
+        if regime_adjustment != 0:
+            learning_note = f"{learning_note} | {regime_note}".strip(" |")
 
     if not all(mandatory_checks) or score < config.min_signal_score:
         return score, None
@@ -2194,6 +2271,7 @@ def evaluate_short_setup(
     config: Config,
     higher_timeframe_trend: Optional[TrendSnapshot],
     higher_timeframe_overview: Optional[MarketOverview],
+    market_overview: MarketOverview,
     state: Optional[Dict[str, object]] = None,
 ) -> Tuple[int, Optional[Signal]]:
     last = candles[-1]
@@ -2276,6 +2354,15 @@ def evaluate_short_setup(
         adjustment, note = calculate_adaptive_score_adjustment(state, config, "SHORT")
         score = max(0, min(100, score + adjustment))
         learning_note = note if adjustment != 0 else ""
+        regime_adjustment, regime_note = calculate_market_regime_adjustment(
+            state,
+            config,
+            "SHORT",
+            market_overview,
+        )
+        score = max(0, min(100, score + regime_adjustment))
+        if regime_adjustment != 0:
+            learning_note = f"{learning_note} | {regime_note}".strip(" |")
 
     if not all(mandatory_checks) or score < config.min_signal_score:
         return score, None
@@ -2540,6 +2627,7 @@ def analyze_market(
         config,
         higher_timeframe_trend,
         higher_timeframe_overview,
+        market_overview,
         state,
     )
     short_score, short_signal = evaluate_short_setup(
@@ -2551,6 +2639,7 @@ def analyze_market(
         config,
         higher_timeframe_trend,
         higher_timeframe_overview,
+        market_overview,
         state,
     )
 
@@ -2684,7 +2773,11 @@ def process_interval(
     sent_time = format_now_local()
     send_telegram(format_signal_message(signal, interval_config, sent_time), interval_config)
     update_signal_stats(root_state, signal, interval_config)
-    working_interval_state["active_trade"] = build_active_trade(signal, sent_time, interval_config)
+    active_trade = build_active_trade(signal, sent_time, interval_config)
+    active_trade["market_regime_key"] = build_market_regime_key(analysis.market_overview, signal.side)
+    active_trade["market_trend_bias"] = analysis.market_overview.trend_bias
+    active_trade["market_breakout"] = analysis.market_overview.breakout_check
+    working_interval_state["active_trade"] = active_trade
     working_interval_state["last_signal_side"] = signal.side
     working_interval_state["last_signal_candle_time"] = signal.candle_time
     working_interval_state["last_signal_sent_time"] = sent_time
