@@ -41,7 +41,6 @@ DEFAULT_SYMBOLS = [
     "SOLUSDT",
 ]
 DEFAULT_INTERVALS = [
-    "1m",
     "5m",
     "15m",
 ]
@@ -1903,6 +1902,19 @@ def fetch_confirmation_trend(base_config: Config, interval: str) -> Optional[Tre
     return calculate_trend_snapshot(candles, confirmation_config)
 
 
+def fetch_confirmation_overview(base_config: Config, interval: str) -> Optional[MarketOverview]:
+    higher_interval = confirmation_interval(interval)
+    if not higher_interval:
+        return None
+
+    confirmation_config = config_for_interval(base_config, higher_interval)
+    candles = fetch_klines(confirmation_config)
+    if len(candles) < minimum_required_candles(confirmation_config):
+        return None
+
+    return calculate_market_overview_for_candles(candles, confirmation_config)
+
+
 def build_signal(
     side: str,
     score: int,
@@ -1960,6 +1972,7 @@ def evaluate_long_setup(
     atr_values: List[float],
     config: Config,
     higher_timeframe_trend: Optional[TrendSnapshot],
+    higher_timeframe_overview: Optional[MarketOverview],
 ) -> Tuple[int, Optional[Signal]]:
     last = candles[-1]
     lows = [c.low for c in candles]
@@ -1978,6 +1991,10 @@ def evaluate_long_setup(
     score = 0
 
     htf_confirmed = higher_timeframe_trend is not None and higher_timeframe_trend.bias == "LONG"
+    htf_fake_breakout = (
+        higher_timeframe_overview is not None
+        and higher_timeframe_overview.breakout_check.startswith("Fake breakout")
+    )
     trend_up = last.close > ema_fast[-1] > ema_slow[-1] and ema_fast[-1] > ema_fast[-2]
     breakout = last.close > resistance * (1 + config.breakout_buffer_pct)
     retest_hold = last.low <= resistance * (1 + config.breakout_buffer_pct) and last.close > resistance
@@ -1990,6 +2007,8 @@ def evaluate_long_setup(
     if htf_confirmed:
         score += 25
         reasons.append(f"Higher timeframe trend confirms LONG on {higher_timeframe_trend.interval}")
+    if htf_fake_breakout:
+        reasons.append("Higher timeframe shows fake breakout risk")
     if trend_up:
         score += 20
         reasons.append("Trend aligned above EMA50 and EMA200")
@@ -2028,6 +2047,7 @@ def evaluate_long_setup(
     ]
     if config.require_higher_timeframe_confirmation and confirmation_interval(config.interval):
         mandatory_checks.append(htf_confirmed)
+        mandatory_checks.append(not htf_fake_breakout)
 
     if not all(mandatory_checks) or score < config.min_signal_score:
         return score, None
@@ -2056,6 +2076,7 @@ def evaluate_short_setup(
     atr_values: List[float],
     config: Config,
     higher_timeframe_trend: Optional[TrendSnapshot],
+    higher_timeframe_overview: Optional[MarketOverview],
 ) -> Tuple[int, Optional[Signal]]:
     last = candles[-1]
     lows = [c.low for c in candles]
@@ -2074,6 +2095,10 @@ def evaluate_short_setup(
     score = 0
 
     htf_confirmed = higher_timeframe_trend is not None and higher_timeframe_trend.bias == "SHORT"
+    htf_fake_breakout = (
+        higher_timeframe_overview is not None
+        and higher_timeframe_overview.breakout_check.startswith("Fake breakout")
+    )
     trend_down = last.close < ema_fast[-1] < ema_slow[-1] and ema_fast[-1] < ema_fast[-2]
     breakdown = last.close < support * (1 - config.breakout_buffer_pct)
     retest_fail = last.high >= support * (1 - config.breakout_buffer_pct) and last.close < support
@@ -2086,6 +2111,8 @@ def evaluate_short_setup(
     if htf_confirmed:
         score += 25
         reasons.append(f"Higher timeframe trend confirms SHORT on {higher_timeframe_trend.interval}")
+    if htf_fake_breakout:
+        reasons.append("Higher timeframe shows fake breakout risk")
     if trend_down:
         score += 20
         reasons.append("Trend aligned below EMA50 and EMA200")
@@ -2124,6 +2151,7 @@ def evaluate_short_setup(
     ]
     if config.require_higher_timeframe_confirmation and confirmation_interval(config.interval):
         mandatory_checks.append(htf_confirmed)
+        mandatory_checks.append(not htf_fake_breakout)
 
     if not all(mandatory_checks) or score < config.min_signal_score:
         return score, None
@@ -2356,6 +2384,7 @@ def analyze_market(
     candles: List[Candle],
     config: Config,
     higher_timeframe_trend: Optional[TrendSnapshot] = None,
+    higher_timeframe_overview: Optional[MarketOverview] = None,
 ) -> AnalysisResult:
     closes = [c.close for c in candles]
     minimum_required = minimum_required_candles(config)
@@ -2378,10 +2407,24 @@ def analyze_market(
     )
 
     long_score, long_signal = evaluate_long_setup(
-        candles, ema_fast, ema_slow, rsi_values, atr_values, config, higher_timeframe_trend
+        candles,
+        ema_fast,
+        ema_slow,
+        rsi_values,
+        atr_values,
+        config,
+        higher_timeframe_trend,
+        higher_timeframe_overview,
     )
     short_score, short_signal = evaluate_short_setup(
-        candles, ema_fast, ema_slow, rsi_values, atr_values, config, higher_timeframe_trend
+        candles,
+        ema_fast,
+        ema_slow,
+        rsi_values,
+        atr_values,
+        config,
+        higher_timeframe_trend,
+        higher_timeframe_overview,
     )
 
     selected_signal: Optional[Signal] = None
@@ -2464,8 +2507,14 @@ def process_interval(
         return True
 
     higher_timeframe_trend = fetch_confirmation_trend(base_config, interval)
+    higher_timeframe_overview = fetch_confirmation_overview(base_config, interval)
 
-    analysis = analyze_market(candles, interval_config, higher_timeframe_trend)
+    analysis = analyze_market(
+        candles,
+        interval_config,
+        higher_timeframe_trend,
+        higher_timeframe_overview,
+    )
     signal = analysis.signal
     if not signal:
         market_overview = analysis.market_overview
@@ -2618,7 +2667,13 @@ def build_signal_checker_message(config: Config) -> str:
             interval_config = config_for_interval(symbol_config, interval)
             candles = fetch_klines(interval_config)
             higher_timeframe_trend = fetch_confirmation_trend(symbol_config, interval)
-            analysis = analyze_market(candles, interval_config, higher_timeframe_trend)
+            higher_timeframe_overview = fetch_confirmation_overview(symbol_config, interval)
+            analysis = analyze_market(
+                candles,
+                interval_config,
+                higher_timeframe_trend,
+                higher_timeframe_overview,
+            )
             best_side, best_score, quality, note = classify_signal_checker_result(
                 analysis,
                 interval_config,
@@ -2996,7 +3051,13 @@ def build_user_signal_check_message(
     interval_config = config_for_interval(config_for_symbol(base_config, symbol), interval)
     candles = fetch_klines(interval_config)
     higher_timeframe_trend = fetch_confirmation_trend(interval_config, interval)
-    analysis = analyze_market(candles, interval_config, higher_timeframe_trend)
+    higher_timeframe_overview = fetch_confirmation_overview(interval_config, interval)
+    analysis = analyze_market(
+        candles,
+        interval_config,
+        higher_timeframe_trend,
+        higher_timeframe_overview,
+    )
     best_side, best_score, quality, note = classify_signal_checker_result(analysis, interval_config)
     current_price = candles[-1].close
     watch_threshold = max(interval_config.min_signal_score - interval_config.watch_alert_score_gap, 54)
