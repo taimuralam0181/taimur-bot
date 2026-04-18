@@ -646,6 +646,23 @@ def build_user_signal_help_payload() -> Dict[str, str]:
     }
 
 
+def build_bot_mirror_panels(state: Dict[str, Any], selected_symbol: str) -> Dict[str, str]:
+    selected_config = build_analysis_config(selected_symbol, "5m")
+    return {
+        "status": trading_bot.build_status_message(selected_config, state),
+        "active_trades": trading_bot.build_active_trades_message(state),
+        "accuracy": trading_bot.build_accuracy_message(state),
+        "daily_report": trading_bot.build_daily_report_message(
+            selected_config,
+            trading_bot.current_local_date(),
+            state,
+        ),
+        "market_status": trading_bot.build_market_message(selected_config),
+        "hourly_update": trading_bot.build_hourly_update_message(selected_config),
+        "signal_checker": trading_bot.build_signal_checker_message(selected_config),
+    }
+
+
 def build_chart_payload(symbol: str, interval: str) -> Dict[str, Any]:
     bundle = fetch_market_bundle(symbol, interval)
     return {
@@ -688,6 +705,7 @@ def build_dashboard_payload(selected_symbol: Optional[str] = None) -> Dict[str, 
         "signal_history_chart": build_signal_history_chart(state),
         "signal_history": load_signal_history(limit=16),
         "session_status": build_session_status(),
+        "bot_mirror": build_bot_mirror_panels(state, selected),
         "market_cards": [
             {
                 "interval": "5m",

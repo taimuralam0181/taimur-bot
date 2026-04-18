@@ -190,6 +190,30 @@ function renderMarketCards(cards) {
     .join("");
 }
 
+function renderBotMirror(panels) {
+  const container = document.getElementById("botMirrorGrid");
+  if (!container) return;
+  const items = [
+    ["Bot Status", panels?.status || "No status available."],
+    ["Active Trades", panels?.active_trades || "No active trade text available."],
+    ["Accuracy", panels?.accuracy || "No accuracy text available."],
+    ["Daily Report", panels?.daily_report || "No daily report available."],
+    ["Market Status", panels?.market_status || "No market status available."],
+    ["Hourly Update", panels?.hourly_update || "No hourly update available."],
+    ["Signal Checker Guide", panels?.signal_checker || "No signal checker guide available."],
+  ];
+  container.innerHTML = items
+    .map(
+      ([title, body]) => `
+        <article class="mirror-card">
+          <h4>${escapeHtml(title)}</h4>
+          <pre class="mirror-pre">${escapeHtml(body)}</pre>
+        </article>
+      `
+    )
+    .join("");
+}
+
 function renderSignalGrid(rows) {
   const body = document.getElementById("signalGridBody");
   body.innerHTML = rows
@@ -512,6 +536,7 @@ function render(payload) {
   renderLatestSignal(payload.latest_signal || {});
   renderFakeBreakoutWarning(payload.fake_breakout_warning || {});
   renderSessions(payload.session_status || []);
+  renderBotMirror(payload.bot_mirror || {});
   renderMarketCards(payload.market_cards || []);
   renderSignalGrid(payload.signal_grid || []);
   renderRecentClosures(payload.recent_closures || []);
