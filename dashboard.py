@@ -534,11 +534,27 @@ def get_latest_real_signal(state: Dict[str, Any]) -> Dict[str, Any]:
                     "side": trade.get("side", "-"),
                     "tier": trade.get("tier", "-"),
                     "grade": trade.get("grade", "-"),
+                    "verdict": trade.get("verdict", "-"),
+                    "setup_type": trade.get("setup_type", "-"),
+                    "setup_note": trade.get("setup_note", "-"),
                     "score": str(trade.get("score", "-")),
                     "entry": format_number(trade.get("entry")),
+                    "market_structure": format_number(trade.get("market_structure_level")),
+                    "atr": format_number(trade.get("atr")),
                     "stop_loss": format_number(trade.get("current_stop_loss", trade.get("stop_loss"))),
+                    "take_profits": [
+                        format_number(tp) for tp in (trade.get("take_profits", []) or [])
+                    ],
+                    "risk_pct": str(trade.get("risk_pct", "-")),
+                    "leverage": str(trade.get("leverage", "-")),
+                    "leverage_note": str(trade.get("leverage_note", "-")),
+                    "margin_mode": str(trade.get("margin_mode", "-")),
                     "opened_at": trade.get("opened_at", "-"),
                     "remaining": str(int(float(trade.get("remaining_position_pct", 0) or 0))) + "%",
+                    "tp1_hit": bool(trade.get("tp1_hit")),
+                    "tp2_hit": bool(trade.get("tp2_hit")),
+                    "market_overview": list(trade.get("market_overview", []) or []),
+                    "reasons": list(trade.get("reasons", []) or []),
                 }
     return latest
 

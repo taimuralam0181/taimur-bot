@@ -1560,11 +1560,14 @@ def build_trade_plan(signal: Signal, config: Config) -> Tuple[str, str, str]:
     return risk_pct, leverage, leverage_note
 
 
-def build_active_trade(signal: Signal, sent_time: str) -> Dict[str, object]:
+def build_active_trade(signal: Signal, sent_time: str, config: Config) -> Dict[str, object]:
+    risk_pct, leverage, leverage_note = build_trade_plan(signal, config)
     return {
         "tier": signal.tier,
         "grade": signal.grade,
         "setup_type": signal.setup_type,
+        "setup_note": signal.setup_note,
+        "verdict": signal.verdict,
         "side": signal.side,
         "score": signal.score,
         "entry": signal.entry,
@@ -1573,6 +1576,12 @@ def build_active_trade(signal: Signal, sent_time: str) -> Dict[str, object]:
         "stop_loss": signal.stop_loss,
         "current_stop_loss": signal.stop_loss,
         "take_profits": signal.take_profits,
+        "reasons": copy.deepcopy(signal.reasons),
+        "market_overview": copy.deepcopy(signal.market_overview),
+        "risk_pct": risk_pct,
+        "leverage": leverage,
+        "leverage_note": leverage_note,
+        "margin_mode": config.margin_mode,
         "candle_time": signal.candle_time,
         "opened_at": sent_time,
         "remaining_position_pct": 100,
@@ -2675,7 +2684,7 @@ def process_interval(
     sent_time = format_now_local()
     send_telegram(format_signal_message(signal, interval_config, sent_time), interval_config)
     update_signal_stats(root_state, signal, interval_config)
-    working_interval_state["active_trade"] = build_active_trade(signal, sent_time)
+    working_interval_state["active_trade"] = build_active_trade(signal, sent_time, interval_config)
     working_interval_state["last_signal_side"] = signal.side
     working_interval_state["last_signal_candle_time"] = signal.candle_time
     working_interval_state["last_signal_sent_time"] = sent_time

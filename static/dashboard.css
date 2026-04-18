@@ -386,6 +386,57 @@ textarea {
     font-size: 0.82rem;
 }
 
+.signal-detail-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+    margin-top: 14px;
+}
+
+.signal-detail-block {
+    margin-top: 14px;
+    padding: 14px;
+    border-radius: 16px;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    background: rgba(255, 255, 255, 0.02);
+}
+
+.signal-detail-title {
+    margin: 8px 0 6px;
+    font-weight: 700;
+}
+
+.signal-detail-copy {
+    margin: 0;
+    color: var(--muted);
+    font-size: 0.88rem;
+}
+
+.signal-detail-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: 10px;
+}
+
+.signal-detail-list span {
+    padding: 8px 10px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.05);
+    color: #dbe2f0;
+    font-size: 0.8rem;
+}
+
+.signal-bullet-list {
+    margin: 10px 0 0;
+    padding-left: 18px;
+    color: #dbe2f0;
+}
+
+.signal-bullet-list li + li {
+    margin-top: 6px;
+}
+
 .warning-card.high-risk {
     border-color: rgba(246, 70, 93, 0.3);
 }
@@ -683,6 +734,10 @@ td {
 
     .checker-side-buttons {
         flex-direction: column;
+    }
+
+    .signal-detail-grid {
+        grid-template-columns: 1fr;
     }
 
     .latest-signal-panel,

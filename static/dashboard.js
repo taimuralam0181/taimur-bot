@@ -58,6 +58,18 @@ function renderLatestSignal(signal) {
   }
 
   box.className = "signal-card";
+  const tpList = (signal.take_profits || [])
+    .map((tp, index) => {
+      const hit = index === 0 ? signal.tp1_hit : index === 1 ? signal.tp2_hit : false;
+      return `<span class="${hit ? "positive" : "flat"}">TP${index + 1} ${tp}${hit ? " HIT" : ""}</span>`;
+    })
+    .join("");
+  const marketOverview = (signal.market_overview || [])
+    .map((line) => `<li>${escapeHtml(line)}</li>`)
+    .join("");
+  const reasons = (signal.reasons || [])
+    .map((line) => `<li>${escapeHtml(line)}</li>`)
+    .join("");
   box.innerHTML = `
     <div class="signal-top">
       <span class="signal-main">${signal.symbol} ${signal.interval}</span>
@@ -65,11 +77,57 @@ function renderLatestSignal(signal) {
     </div>
     <div class="signal-meta">
       <span>${signal.side}</span>
+      <span>${signal.verdict}</span>
       <span>Score ${signal.score}</span>
-      <span>Entry ${signal.entry}</span>
-      <span>SL ${signal.stop_loss}</span>
-      <span>Remaining ${signal.remaining}</span>
-      <span>${signal.opened_at}</span>
+      <span>Opened ${signal.opened_at}</span>
+    </div>
+    <div class="signal-detail-grid">
+      <div class="signal-detail-block">
+        <p class="metric-label">Setup</p>
+        <p class="signal-detail-title">${signal.setup_type || "-"}</p>
+        <p class="signal-detail-copy">${signal.setup_note || "-"}</p>
+      </div>
+      <div class="signal-detail-block">
+        <p class="metric-label">Trade Plan</p>
+        <div class="signal-detail-list">
+          <span>Entry ${signal.entry}</span>
+          <span>Structure ${signal.market_structure}</span>
+          <span>ATR ${signal.atr}</span>
+          <span>SL ${signal.stop_loss}</span>
+          <span>Remaining ${signal.remaining}</span>
+        </div>
+      </div>
+      <div class="signal-detail-block">
+        <p class="metric-label">Risk</p>
+        <div class="signal-detail-list">
+          <span>Risk ${signal.risk_pct}</span>
+          <span>Leverage ${signal.leverage}</span>
+          <span>Margin ${signal.margin_mode}</span>
+          <span>${signal.leverage_note}</span>
+        </div>
+      </div>
+      <div class="signal-detail-block">
+        <p class="metric-label">Targets</p>
+        <div class="signal-detail-list">
+          ${tpList || "<span>-</span>"}
+        </div>
+      </div>
+    </div>
+    <div class="signal-detail-block">
+      <p class="metric-label">Mentor Profit Plan</p>
+      <div class="signal-detail-list">
+        <span>TP1: Book 40%, move SL to entry</span>
+        <span>TP2: Book 30%, move SL to TP1</span>
+        <span>TP3: Close remaining 30%</span>
+      </div>
+    </div>
+    <div class="signal-detail-block">
+      <p class="metric-label">Market Condition</p>
+      <ul class="signal-bullet-list">${marketOverview || "<li>No live market condition attached</li>"}</ul>
+    </div>
+    <div class="signal-detail-block">
+      <p class="metric-label">Reasons</p>
+      <ul class="signal-bullet-list">${reasons || "<li>No reasons saved</li>"}</ul>
     </div>
   `;
 }
