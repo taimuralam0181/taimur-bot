@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Scalping Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/dashboard.css">
+</head>
+<body>
+    <div class="app-shell">
+        <aside class="sidebar">
+            <div class="brand">
+                <div class="brand-mark">B</div>
+                <div>
+                    <p class="brand-kicker">Breakout Desk</p>
+                    <h1>Scalp Monitor</h1>
+                </div>
+            </div>
+            <div class="sidebar-card">
+                <p class="sidebar-label">Mode</p>
+                <p class="sidebar-value" id="modeLabel">{{ payload.mode }}</p>
+            </div>
+            <div class="sidebar-card">
+                <p class="sidebar-label">Symbols</p>
+                <div class="pill-row" id="symbolPills"></div>
+            </div>
+            <div class="sidebar-card">
+                <p class="sidebar-label">Timeframes</p>
+                <div class="pill-row" id="intervalPills"></div>
+            </div>
+            <div class="sidebar-card">
+                <p class="sidebar-label">Last Refresh</p>
+                <p class="sidebar-value" id="refreshTime">{{ payload.timestamp }}</p>
+            </div>
+        </aside>
+
+        <main class="main-panel">
+            <section class="hero">
+                <div>
+                    <p class="eyebrow">Binance-style control view</p>
+                    <h2>Real Breakout Scalping Dashboard</h2>
+                    <p class="hero-copy">5m entry logic, 15m fake-breakout filter, live state panels, and recent closure analytics in one view.</p>
+                </div>
+                <div class="hero-badges">
+                    <span class="hero-badge live">LIVE</span>
+                    <span class="hero-badge warn">WATCH ALERTS</span>
+                </div>
+            </section>
+
+            <section class="overview-grid" id="overviewGrid"></section>
+
+            <section class="panel-row">
+                <section class="panel">
+                    <div class="panel-header">
+                        <div>
+                            <p class="panel-kicker">Signal Matrix</p>
+                            <h3>Pairs / Timeframes</h3>
+                        </div>
+                    </div>
+                    <div class="table-wrap">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Pair</th>
+                                    <th>TF</th>
+                                    <th>Status</th>
+                                    <th>Tier</th>
+                                    <th>Score</th>
+                                    <th>Entry</th>
+                                    <th>SL</th>
+                                    <th>Remaining</th>
+                                    <th>Last Scan</th>
+                                </tr>
+                            </thead>
+                            <tbody id="signalGridBody"></tbody>
+                        </table>
+                    </div>
+                </section>
+            </section>
+
+            <section class="panel-row two-up">
+                <section class="panel">
+                    <div class="panel-header">
+                        <div>
+                            <p class="panel-kicker">Recent Closures</p>
+                            <h3>Trade Outcomes</h3>
+                        </div>
+                    </div>
+                    <div class="recent-list" id="recentClosures"></div>
+                </section>
+
+                <section class="panel">
+                    <div class="panel-header">
+                        <div>
+                            <p class="panel-kicker">Accuracy Lens</p>
+                            <h3>By Pair / Timeframe</h3>
+                        </div>
+                    </div>
+                    <div class="split-columns">
+                        <div>
+                            <p class="mini-title">Pairs</p>
+                            <div class="accuracy-list" id="accuracyPairs"></div>
+                        </div>
+                        <div>
+                            <p class="mini-title">Timeframes</p>
+                            <div class="accuracy-list" id="accuracyIntervals"></div>
+                        </div>
+                    </div>
+                </section>
+            </section>
+        </main>
+    </div>
+
+    <script>
+        window.__INITIAL_DASHBOARD__ = {{ payload|tojson }};
+    </script>
+    <script src="/static/dashboard.js"></script>
+</body>
+</html>
