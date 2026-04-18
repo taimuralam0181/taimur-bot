@@ -2,6 +2,7 @@ const state = {
   payload: window.__INITIAL_DASHBOARD__ || null,
   autoRefresh: true,
   lastSignalSignature: "",
+  lastBreakoutSignature: "",
   refreshTimer: null,
   chartInterval: "5m",
   checkerSide: "LONG",
@@ -405,9 +406,67 @@ function maybePlaySignalSound(payload) {
     return;
   }
   if (signature !== state.lastSignalSignature) {
+    playAlertTone("signal");
+    state.lastSignalSignature = signature;
+  }
+}
+
+function playAlertTone(type = "signal") {
+  try {
+    const AudioContextRef = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextRef) {
+      const audio = document.getElementById("signalAudio");
+      if (audio) audio.play().catch(() => {});
+      return;
+    }
+    const context = new AudioContextRef();
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+    oscillator.connect(gain);
+    gain.connect(context.destination);
+
+    if (type === "breakout") {
+      oscillator.frequency.setValueAtTime(880, context.currentTime);
+      oscillator.frequency.linearRampToValueAtTime(660, context.currentTime + 0.16);
+    } else {
+      oscillator.frequency.setValueAtTime(620, context.currentTime);
+      oscillator.frequency.linearRampToValueAtTime(980, context.currentTime + 0.18);
+    }
+
+    gain.gain.setValueAtTime(0.0001, context.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.05, context.currentTime + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + 0.24);
+    oscillator.start(context.currentTime);
+    oscillator.stop(context.currentTime + 0.25);
+  } catch (error) {
     const audio = document.getElementById("signalAudio");
     if (audio) audio.play().catch(() => {});
-    state.lastSignalSignature = signature;
+  }
+}
+
+function maybePlayBreakoutSound(payload) {
+  const selected = payload.selected_symbol || "";
+  const warning = payload.fake_breakout_warning || {};
+  const cards = payload.market_cards || [];
+  const activeBreakouts = cards
+    .filter((card) => String(card.breakout || "").startsWith("Real breakout"))
+    .map((card) => `${card.interval}:${card.breakout}`)
+    .join("|");
+  const signature = `${selected}|${warning.status || ""}|${warning.detail || ""}|${activeBreakouts}`;
+  if (!signature.trim()) return;
+  if (!state.lastBreakoutSignature) {
+    state.lastBreakoutSignature = signature;
+    return;
+  }
+  if (signature !== state.lastBreakoutSignature) {
+    const shouldAlert =
+      String(warning.status || "") === "HIGH RISK" ||
+      String(warning.status || "") === "CLEAR" ||
+      activeBreakouts.length > 0;
+    if (shouldAlert) {
+      playAlertTone("breakout");
+    }
+    state.lastBreakoutSignature = signature;
   }
 }
 
@@ -549,6 +608,7 @@ function render(payload) {
   renderCheckerHelp(payload.user_signal_checker?.help || "");
   syncSideButtons();
   maybePlaySignalSound(payload);
+  maybePlayBreakoutSound(payload);
 }
 
 async function refreshDashboard() {
