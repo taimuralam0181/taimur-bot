@@ -179,6 +179,8 @@ def build_analysis_config(symbol: str, interval: str) -> trading_bot.Config:
         hourly_update_timeframe=os.getenv("BOT_HOURLY_UPDATE_TIMEFRAME", "5m").strip() or "5m",
         daily_report_hour=int(os.getenv("BOT_DAILY_REPORT_HOUR", "23")),
         state_file=STATE_FILE,
+        adaptive_learning_enabled=trading_bot.parse_bool_env("BOT_ADAPTIVE_LEARNING_ENABLED", True),
+        adaptive_learning_max_adjustment=int(os.getenv("BOT_ADAPTIVE_LEARNING_MAX_ADJUSTMENT", "8")),
     )
 
 

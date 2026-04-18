@@ -4,4 +4,5 @@ __pycache__/
 .env
 .env.*
 bot_state.json
+dashboard_history.db
 *.log

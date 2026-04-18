@@ -102,6 +102,8 @@ class Config:
     hourly_update_timeframe: str
     daily_report_hour: int
     state_file: Path
+    adaptive_learning_enabled: bool
+    adaptive_learning_max_adjustment: int
 
 
 @dataclass
@@ -294,6 +296,8 @@ def load_config() -> Config:
         hourly_update_timeframe=os.getenv("BOT_HOURLY_UPDATE_TIMEFRAME", "5m").strip() or "5m",
         daily_report_hour=int(os.getenv("BOT_DAILY_REPORT_HOUR", "23")),
         state_file=Path(os.getenv("BOT_STATE_FILE", str(STATE_FILE))).expanduser(),
+        adaptive_learning_enabled=parse_bool_env("BOT_ADAPTIVE_LEARNING_ENABLED", True),
+        adaptive_learning_max_adjustment=int(os.getenv("BOT_ADAPTIVE_LEARNING_MAX_ADJUSTMENT", "8")),
     )
 
 
@@ -435,6 +439,8 @@ def config_for_interval(config: Config, interval: str) -> Config:
         hourly_update_timeframe=config.hourly_update_timeframe,
         daily_report_hour=config.daily_report_hour,
         state_file=config.state_file,
+        adaptive_learning_enabled=config.adaptive_learning_enabled,
+        adaptive_learning_max_adjustment=config.adaptive_learning_max_adjustment,
     )
 
 
@@ -477,6 +483,8 @@ def config_for_symbol(config: Config, symbol: str) -> Config:
         hourly_update_timeframe=config.hourly_update_timeframe,
         daily_report_hour=config.daily_report_hour,
         state_file=config.state_file,
+        adaptive_learning_enabled=config.adaptive_learning_enabled,
+        adaptive_learning_max_adjustment=config.adaptive_learning_max_adjustment,
     )
 
 
@@ -1297,6 +1305,75 @@ def format_accuracy_line(label: str, stats_bucket: Dict[str, object]) -> str:
     )
 
 
+def calculate_adaptive_score_adjustment(
+    state: Dict[str, object],
+    config: Config,
+    side: str,
+) -> Tuple[int, str]:
+    if not config.adaptive_learning_enabled:
+        return 0, "Adaptive learning off"
+
+    performance_state = get_performance_state(state)
+    pair_interval_key = f"{config.symbol} {config.interval}"
+    pair_interval_stats = performance_state.get("by_symbol_interval", {}).get(pair_interval_key, {})
+    closed_trades = int(pair_interval_stats.get("closed_trades", 0) or 0) if isinstance(pair_interval_stats, dict) else 0
+
+    if closed_trades < 5:
+        return 0, "Not enough closed trades for learning"
+
+    recent_closed = performance_state.get("recent_closed", [])
+    if not isinstance(recent_closed, list):
+        recent_closed = []
+
+    side_trades = [
+        item
+        for item in recent_closed
+        if isinstance(item, dict)
+        and str(item.get("symbol", "")) == config.symbol
+        and str(item.get("interval", "")) == config.interval
+        and str(item.get("side", "")) == side
+    ][-12:]
+
+    if len(side_trades) < 3:
+        return 0, "Not enough side-specific trades for learning"
+
+    wins = 0
+    losses = 0
+    total_r = 0.0
+    for trade in side_trades:
+        result_r = float(trade.get("result_r", 0.0) or 0.0)
+        total_r += result_r
+        if result_r > RESULT_EPSILON_R:
+            wins += 1
+        elif result_r < -RESULT_EPSILON_R:
+            losses += 1
+
+    trade_count = max(len(side_trades), 1)
+    win_rate = (wins / trade_count) * 100.0
+    average_r = total_r / trade_count
+    adjustment = 0
+
+    if win_rate >= 65 and average_r > 0.15:
+        adjustment += 4
+    elif win_rate >= 55 and average_r > 0.05:
+        adjustment += 2
+    elif win_rate <= 35 and average_r < -0.10:
+        adjustment -= 4
+    elif win_rate <= 45 and average_r < 0:
+        adjustment -= 2
+
+    if losses >= wins + 3:
+        adjustment -= 2
+    elif wins >= losses + 3:
+        adjustment += 2
+
+    bounded = max(-config.adaptive_learning_max_adjustment, min(config.adaptive_learning_max_adjustment, adjustment))
+    if bounded == 0:
+        return 0, f"Learning neutral from {trade_count} recent {side} trades"
+    sign = "+" if bounded > 0 else ""
+    return bounded, f"Learning bias {sign}{bounded} from {trade_count} recent {side} trades"
+
+
 def build_ranked_accuracy_lines(
     container: Dict[str, object],
     minimum_closed_trades: int = 1,
@@ -1964,6 +2041,30 @@ def build_signal(
     )
 
 
+def retune_signal_score(
+    signal: Optional[Signal],
+    score: int,
+    config: Config,
+    learning_note: str = "",
+) -> Optional[Signal]:
+    if signal is None:
+        return None
+    if score < config.min_signal_score:
+        return None
+
+    signal.score = score
+    signal.tier, signal.verdict = classify_signal(score, config)
+    signal.grade, signal.setup_type, signal.setup_note = classify_setup_grade(
+        score,
+        signal.side,
+        signal.reasons,
+        config,
+    )
+    if learning_note:
+        signal.reasons.append(learning_note)
+    return signal
+
+
 def evaluate_long_setup(
     candles: List[Candle],
     ema_fast: List[float],
@@ -1973,6 +2074,7 @@ def evaluate_long_setup(
     config: Config,
     higher_timeframe_trend: Optional[TrendSnapshot],
     higher_timeframe_overview: Optional[MarketOverview],
+    state: Optional[Dict[str, object]] = None,
 ) -> Tuple[int, Optional[Signal]]:
     last = candles[-1]
     lows = [c.low for c in candles]
@@ -2049,13 +2151,19 @@ def evaluate_long_setup(
         mandatory_checks.append(htf_confirmed)
         mandatory_checks.append(not htf_fake_breakout)
 
+    learning_note = ""
+    if state is not None:
+        adjustment, note = calculate_adaptive_score_adjustment(state, config, "LONG")
+        score = max(0, min(100, score + adjustment))
+        learning_note = note if adjustment != 0 else ""
+
     if not all(mandatory_checks) or score < config.min_signal_score:
         return score, None
 
     stop_loss = min(last.low - (atr * 0.2), last.close - (atr * config.atr_stop_multiplier))
     stop_loss = max(stop_loss, recent_support - atr)
 
-    return score, build_signal(
+    return score, retune_signal_score(build_signal(
         side="LONG",
         score=score,
         entry=last.close,
@@ -2065,7 +2173,7 @@ def evaluate_long_setup(
         market_structure_level=resistance,
         atr=atr,
         config=config,
-    )
+    ), score, config, learning_note)
 
 
 def evaluate_short_setup(
@@ -2077,6 +2185,7 @@ def evaluate_short_setup(
     config: Config,
     higher_timeframe_trend: Optional[TrendSnapshot],
     higher_timeframe_overview: Optional[MarketOverview],
+    state: Optional[Dict[str, object]] = None,
 ) -> Tuple[int, Optional[Signal]]:
     last = candles[-1]
     lows = [c.low for c in candles]
@@ -2153,13 +2262,19 @@ def evaluate_short_setup(
         mandatory_checks.append(htf_confirmed)
         mandatory_checks.append(not htf_fake_breakout)
 
+    learning_note = ""
+    if state is not None:
+        adjustment, note = calculate_adaptive_score_adjustment(state, config, "SHORT")
+        score = max(0, min(100, score + adjustment))
+        learning_note = note if adjustment != 0 else ""
+
     if not all(mandatory_checks) or score < config.min_signal_score:
         return score, None
 
     stop_loss = max(last.high + (atr * 0.2), last.close + (atr * config.atr_stop_multiplier))
     stop_loss = min(stop_loss, recent_resistance + atr)
 
-    return score, build_signal(
+    return score, retune_signal_score(build_signal(
         side="SHORT",
         score=score,
         entry=last.close,
@@ -2169,7 +2284,7 @@ def evaluate_short_setup(
         market_structure_level=support,
         atr=atr,
         config=config,
-    )
+    ), score, config, learning_note)
 
 
 def is_in_cooldown(signal: Signal, state: Dict[str, object], config: Config) -> bool:
@@ -2385,6 +2500,7 @@ def analyze_market(
     config: Config,
     higher_timeframe_trend: Optional[TrendSnapshot] = None,
     higher_timeframe_overview: Optional[MarketOverview] = None,
+    state: Optional[Dict[str, object]] = None,
 ) -> AnalysisResult:
     closes = [c.close for c in candles]
     minimum_required = minimum_required_candles(config)
@@ -2415,6 +2531,7 @@ def analyze_market(
         config,
         higher_timeframe_trend,
         higher_timeframe_overview,
+        state,
     )
     short_score, short_signal = evaluate_short_setup(
         candles,
@@ -2425,6 +2542,7 @@ def analyze_market(
         config,
         higher_timeframe_trend,
         higher_timeframe_overview,
+        state,
     )
 
     selected_signal: Optional[Signal] = None
@@ -2514,6 +2632,7 @@ def process_interval(
         interval_config,
         higher_timeframe_trend,
         higher_timeframe_overview,
+        root_state,
     )
     signal = analysis.signal
     if not signal:
@@ -2673,6 +2792,7 @@ def build_signal_checker_message(config: Config) -> str:
                 interval_config,
                 higher_timeframe_trend,
                 higher_timeframe_overview,
+                state,
             )
             best_side, best_score, quality, note = classify_signal_checker_result(
                 analysis,
@@ -2694,7 +2814,9 @@ def build_user_signal_help_message() -> str:
         f"{USER_SIGNAL_TEMPLATE}\n\n"
         "Example free-form:\n"
         "Short BTCUSDT 15m entry 69800 to 70300, stop loss above 71000, "
-        "targets 68800, 68000, 66800"
+        "targets 68800, 68000, 66800\n\n"
+        "Loose format also works:\n"
+        "BTCUSDT 5m long 84500 83900 85100 85600 86200"
     )
 
 
@@ -2850,6 +2972,41 @@ def extract_take_profits(text: str) -> List[float]:
     return extract_numeric_values(targets_segment)[:3]
 
 
+def infer_unlabeled_signal_levels(
+    text: str,
+) -> Tuple[Optional[float], Optional[float], Optional[float], List[float], List[str]]:
+    sanitized = re.sub(r"\b\d+\s*[MHDW]\b", " ", text, flags=re.IGNORECASE)
+    numbers = extract_numeric_values(sanitized)
+    if not numbers:
+        return None, None, None, [], []
+
+    notes: List[str] = []
+    cursor = 0
+    entry_low: Optional[float]
+    entry_high: Optional[float]
+
+    if len(numbers) >= 2 and abs(numbers[0] - numbers[1]) / max(abs(numbers[1]), 1.0) <= 0.03:
+        entry_low, entry_high = sorted([numbers[0], numbers[1]])
+        cursor = 2
+        notes.append("Entry range inferred from unlabeled numbers.")
+    else:
+        entry_low = numbers[0]
+        entry_high = numbers[0]
+        cursor = 1
+        notes.append("Single entry inferred from unlabeled numbers.")
+
+    stop_loss = numbers[cursor] if len(numbers) > cursor else None
+    if stop_loss is not None:
+        cursor += 1
+        notes.append("Stop loss inferred from unlabeled numbers.")
+
+    take_profits = numbers[cursor : cursor + 3]
+    if take_profits:
+        notes.append("Take profits inferred from unlabeled numbers.")
+
+    return entry_low, entry_high, stop_loss, take_profits, notes
+
+
 def infer_side_from_levels(
     entry_low: Optional[float],
     entry_high: Optional[float],
@@ -2901,6 +3058,21 @@ def parse_user_signal_text(
     stop_loss = extract_stop_loss(normalized_text)
     take_profits = extract_take_profits(normalized_text)
     notes.extend(entry_notes)
+
+    if entry_low is None and stop_loss is None and not take_profits:
+        (
+            fallback_entry_low,
+            fallback_entry_high,
+            fallback_stop_loss,
+            fallback_take_profits,
+            fallback_notes,
+        ) = infer_unlabeled_signal_levels(normalized_text)
+        if fallback_entry_low is not None:
+            entry_low = fallback_entry_low
+            entry_high = fallback_entry_high
+            stop_loss = fallback_stop_loss
+            take_profits = fallback_take_profits
+            notes.extend(fallback_notes)
 
     inferred_side = infer_side_from_levels(entry_low, entry_high, stop_loss, take_profits)
     if inferred_side:
@@ -3057,6 +3229,7 @@ def build_user_signal_check_message(
         interval_config,
         higher_timeframe_trend,
         higher_timeframe_overview,
+        load_state(interval_config.state_file),
     )
     best_side, best_score, quality, note = classify_signal_checker_result(analysis, interval_config)
     current_price = candles[-1].close
@@ -3093,6 +3266,7 @@ def build_user_signal_check_message(
             f"{normalized_section}"
             f"Pair: {symbol}\n"
             f"Timeframe: {interval}\n"
+            f"Learning Mode: {'Adaptive feedback ON' if interval_config.adaptive_learning_enabled else 'OFF'}\n"
             f"User Side: {side}\n"
             f"Current Price: {format_price(current_price)}\n"
             f"LONG Score: {analysis.long_score}\n"
@@ -3113,6 +3287,7 @@ def build_user_signal_check_message(
         f"{normalized_section}"
         f"Pair: {symbol}\n"
         f"Timeframe: {interval}\n"
+        f"Learning Mode: {'Adaptive feedback ON' if interval_config.adaptive_learning_enabled else 'OFF'}\n"
         f"Current Price: {format_price(current_price)}\n"
         f"LONG Score: {analysis.long_score}\n"
         f"SHORT Score: {analysis.short_score}\n"
