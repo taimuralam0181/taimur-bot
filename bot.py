@@ -2034,7 +2034,7 @@ def evaluate_long_setup(
         score += 10
         reasons.append("Price is not overextended from EMA50")
 
-    structure_confirmed = breakout or retest_hold
+    structure_confirmed = breakout
 
     mandatory_checks = [
         trend_up,
@@ -2138,7 +2138,7 @@ def evaluate_short_setup(
         score += 10
         reasons.append("Price is not overextended from EMA50")
 
-    structure_confirmed = breakdown or retest_fail
+    structure_confirmed = breakdown
 
     mandatory_checks = [
         trend_down,
@@ -3133,7 +3133,7 @@ def build_status_message(config: Config, state: Dict[str, object]) -> str:
 
     return (
         "Bot Status\n\n"
-        "Profile: Scalping\n"
+        "Profile: Real Breakout Scalping\n"
         f"Symbols: {', '.join(config.symbols)}\n"
         f"Intervals: {', '.join(config.intervals)}\n"
         f"Poll Seconds: {config.poll_seconds}\n"
@@ -3193,7 +3193,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     config: Config = context.application.bot_data["config"]
     message = (
         "Bot is running.\n\n"
-        "Profile: Scalping\n"
+        "Profile: Real Breakout Scalping\n"
         f"Symbols: {', '.join(config.symbols)}\n"
         f"Intervals: {', '.join(config.intervals)}\n"
         f"Poll Seconds: {config.poll_seconds}\n"
