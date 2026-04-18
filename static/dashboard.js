@@ -413,6 +413,28 @@ function buildQuickSignalText() {
   return lines.join("\n");
 }
 
+function setCheckerLiveStatus(text, tone = "neutral") {
+  const node = document.getElementById("checkerLiveStatus");
+  if (!node) return;
+  node.textContent = text;
+  node.className = `checker-live-status checker-live-status-${tone}`;
+}
+
+function validateCheckerInputs() {
+  const entry = document.getElementById("checkerEntry").value.trim();
+  const signalInput = document.getElementById("signalInput").value.trim();
+  if (signalInput) {
+    setCheckerLiveStatus("Advanced Input Ready", "good");
+    return { ok: true, message: "Advanced signal text ready." };
+  }
+  if (!entry) {
+    setCheckerLiveStatus("Entry Needed", "watch");
+    return { ok: false, message: "Entry price ba entry zone dao." };
+  }
+  setCheckerLiveStatus("Quick Form Ready", "good");
+  return { ok: true, message: "Quick signal check ready." };
+}
+
 function renderCheckerHelp(help) {
   const output = document.getElementById("signalCheckerOutput");
   if (!output) return;
@@ -422,6 +444,7 @@ function renderCheckerHelp(help) {
       <h4>Quick form diye signal check koro</h4>
       <p class="checker-result-summary">Pair, timeframe, side, entry, SL, TP dile bot market-er sathe compare kore clean verdict dibe.</p>
       <div class="checker-result-points">
+        <span>Ready = form thik ache</span>
         <span>GOOD = entry possible</span>
         <span>WATCH = wait koro</span>
         <span>BAD = avoid</span>
@@ -464,6 +487,10 @@ function renderCheckerResult(payload) {
       <div class="checker-message">${escapeHtml(message)}</div>
     </div>
   `;
+  if (klass === "checker-result-good") setCheckerLiveStatus("Check Complete", "good");
+  else if (klass === "checker-result-watch") setCheckerLiveStatus("Need Attention", "watch");
+  else if (klass === "checker-result-bad") setCheckerLiveStatus("Input/Setup Weak", "bad");
+  else setCheckerLiveStatus("Checker Ready", "neutral");
 }
 
 function syncSideButtons() {
@@ -542,13 +569,13 @@ function setAutoRefresh(enabled) {
 
 async function checkUserSignal() {
   const advancedText = document.getElementById("signalInput").value.trim();
-  const entry = document.getElementById("checkerEntry").value.trim();
+  const validation = validateCheckerInputs();
   const text = advancedText || buildQuickSignalText();
-  if (!advancedText && !entry) {
+  if (!validation.ok) {
     renderCheckerResult({
       verdict: "WATCH",
-      note: "Entry needed",
-      message: "Quick check-er jonno at least entry price ba zone dao.",
+      note: "Input incomplete",
+      message: validation.message,
     });
     return;
   }
@@ -560,6 +587,7 @@ async function checkUserSignal() {
     note: "Live market scan",
     message: "Signal analyze kortese...",
   });
+  setCheckerLiveStatus("Checking...", "watch");
   try {
     const response = await fetch("/api/check-user-signal", {
       method: "POST",
@@ -574,6 +602,7 @@ async function checkUserSignal() {
       note: "Request failed",
       message: "Signal checker fail korse. Abar try koro.",
     });
+    setCheckerLiveStatus("Check Failed", "bad");
   }
 }
 
@@ -586,17 +615,27 @@ document.getElementById("autoRefreshToggle").addEventListener("change", (event) 
 document.getElementById("checkSignalBtn").addEventListener("click", checkUserSignal);
 document.getElementById("pasteTemplateBtn").addEventListener("click", () => {
   document.getElementById("signalInput").value = state.payload.user_signal_checker?.help || "";
+  validateCheckerInputs();
 });
 document.getElementById("useQuickTemplateBtn").addEventListener("click", () => {
   document.getElementById("signalInput").value = buildQuickSignalText();
+  validateCheckerInputs();
 });
 document.querySelectorAll(".side-btn").forEach((button) => {
   button.addEventListener("click", () => {
     state.checkerSide = button.dataset.side || "LONG";
     syncSideButtons();
+    validateCheckerInputs();
   });
+});
+["checkerEntry", "checkerStopLoss", "checkerTp1", "checkerTp2", "checkerTp3", "signalInput", "checkerPair", "checkerTimeframe"].forEach((id) => {
+  const node = document.getElementById(id);
+  if (!node) return;
+  node.addEventListener("input", validateCheckerInputs);
+  node.addEventListener("change", validateCheckerInputs);
 });
 
 render(state.payload);
+validateCheckerInputs();
 refreshChartOnly();
 setAutoRefresh(true);

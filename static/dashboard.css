@@ -528,6 +528,49 @@ textarea {
     gap: 16px;
 }
 
+.checker-status-row {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    flex-wrap: wrap;
+    margin-bottom: 14px;
+}
+
+.checker-live-status {
+    display: inline-flex;
+    align-items: center;
+    padding: 8px 12px;
+    border-radius: 999px;
+    font-size: 0.8rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+}
+
+.checker-live-status-neutral {
+    background: rgba(77, 163, 255, 0.12);
+    color: var(--blue);
+}
+
+.checker-live-status-good {
+    background: rgba(14, 203, 129, 0.12);
+    color: var(--green);
+}
+
+.checker-live-status-watch {
+    background: rgba(240, 185, 11, 0.12);
+    color: var(--accent);
+}
+
+.checker-live-status-bad {
+    background: rgba(246, 70, 93, 0.12);
+    color: var(--red);
+}
+
+.checker-live-help {
+    color: var(--muted);
+    font-size: 0.82rem;
+}
+
 .checker-quick-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
