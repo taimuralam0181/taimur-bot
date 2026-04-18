@@ -4,6 +4,7 @@ const state = {
   lastSignalSignature: "",
   refreshTimer: null,
   chartInterval: "5m",
+  checkerSide: "LONG",
 };
 
 function renderPills(selectId, values, selected) {
@@ -328,10 +329,80 @@ function maybePlaySignalSound(payload) {
   }
 }
 
+function escapeHtml(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function buildQuickSignalText() {
+  const pair = document.getElementById("checkerPair").value || state.payload.selected_symbol || "BTCUSDT";
+  const timeframe = document.getElementById("checkerTimeframe").value || "5m";
+  const side = state.checkerSide || "LONG";
+  const entry = document.getElementById("checkerEntry").value.trim();
+  return [`PAIR: ${pair}`, `TIMEFRAME: ${timeframe}`, `SIDE: ${side}`, `ENTRY: ${entry}`].join("\n");
+}
+
 function renderCheckerHelp(help) {
   const output = document.getElementById("signalCheckerOutput");
   if (!output) return;
-  output.innerHTML = `<pre>${help}</pre>`;
+  output.innerHTML = `
+    <div class="checker-result checker-result-neutral">
+      <p class="checker-result-kicker">How To Use</p>
+      <h4>Quick form diye signal check koro</h4>
+      <p class="checker-result-summary">Pair, timeframe, side, ar entry dile bot market-er sathe compare kore clean verdict dibe.</p>
+      <div class="checker-result-points">
+        <span>GOOD = entry possible</span>
+        <span>WATCH = wait koro</span>
+        <span>BAD = avoid</span>
+      </div>
+      <div class="checker-message">${escapeHtml(help)}</div>
+    </div>
+  `;
+}
+
+function renderCheckerResult(payload) {
+  const output = document.getElementById("signalCheckerOutput");
+  if (!output) return;
+  const verdict = String(payload.verdict || "NEUTRAL").toUpperCase();
+  const lowered = verdict.toLowerCase();
+  let klass = "checker-result-neutral";
+  if (lowered.includes("good") || lowered.includes("valid")) klass = "checker-result-good";
+  else if (lowered.includes("watch") || lowered.includes("late")) klass = "checker-result-watch";
+  else if (lowered.includes("bad") || lowered.includes("invalid")) klass = "checker-result-bad";
+
+  const message = String(payload.message || payload.detail || "No checker response.");
+  const headline =
+    klass === "checker-result-good"
+      ? "Signal ta market-er sathe aligned."
+      : klass === "checker-result-watch"
+      ? "Ekhono wait kora better."
+      : klass === "checker-result-bad"
+      ? "Ei entry avoid kora better."
+      : "Checker result ready.";
+
+  output.innerHTML = `
+    <div class="checker-result ${klass}">
+      <p class="checker-result-kicker">Bot Verdict</p>
+      <h4>${escapeHtml(verdict)}</h4>
+      <p class="checker-result-summary">${escapeHtml(headline)}</p>
+      <div class="checker-result-points">
+        <span>${escapeHtml(payload.note || "Market check done")}</span>
+        <span>${escapeHtml(document.getElementById("checkerPair").value || "")}</span>
+        <span>${escapeHtml(document.getElementById("checkerTimeframe").value || "")}</span>
+      </div>
+      <div class="checker-message">${escapeHtml(message)}</div>
+    </div>
+  `;
+}
+
+function syncSideButtons() {
+  document.querySelectorAll(".side-btn").forEach((button) => {
+    button.classList.toggle("active", button.dataset.side === state.checkerSide);
+  });
 }
 
 function render(payload) {
@@ -340,6 +411,8 @@ function render(payload) {
   document.getElementById("heroTitle").textContent = `${payload.mode} - ${payload.selected_symbol}`;
   renderPills("pairSelector", payload.symbols || [], payload.selected_symbol);
   renderPills("chartIntervalSelector", payload.intervals || [], state.chartInterval);
+  renderPills("checkerPair", payload.symbols || [], payload.selected_symbol);
+  renderPills("checkerTimeframe", payload.intervals || [], "5m");
   renderTicker(payload.ticker_rows || []);
   renderOverview(payload.overview_cards || []);
   renderLatestSignal(payload.latest_signal || {});
@@ -355,6 +428,7 @@ function render(payload) {
   renderBarChart("signalHistoryChart", payload.signal_history_chart || []);
   renderCandles(payload.candles_chart || []);
   renderCheckerHelp(payload.user_signal_checker?.help || "");
+  syncSideButtons();
   maybePlaySignalSound(payload);
 }
 
@@ -400,21 +474,39 @@ function setAutoRefresh(enabled) {
 }
 
 async function checkUserSignal() {
-  const text = document.getElementById("signalInput").value.trim();
+  const advancedText = document.getElementById("signalInput").value.trim();
+  const entry = document.getElementById("checkerEntry").value.trim();
+  const text = advancedText || buildQuickSignalText();
+  if (!advancedText && !entry) {
+    renderCheckerResult({
+      verdict: "WATCH",
+      note: "Entry needed",
+      message: "Quick check-er jonno at least entry price ba zone dao.",
+    });
+    return;
+  }
   if (!text) return;
-  const selected = document.getElementById("pairSelector").value || state.payload.selected_symbol;
-  const output = document.getElementById("signalCheckerOutput");
-  output.innerHTML = "<pre>Checking signal...</pre>";
+  const selected = document.getElementById("checkerPair").value || state.payload.selected_symbol;
+  const interval = document.getElementById("checkerTimeframe").value || "5m";
+  renderCheckerResult({
+    verdict: "CHECKING",
+    note: "Live market scan",
+    message: "Signal analyze kortese...",
+  });
   try {
     const response = await fetch("/api/check-user-signal", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, symbol: selected, interval: "5m" }),
+      body: JSON.stringify({ text, symbol: selected, interval, side: state.checkerSide }),
     });
     const payload = await response.json();
-    output.innerHTML = `<pre>${payload.message || payload.detail || "Could not check signal."}</pre>`;
+    renderCheckerResult(payload);
   } catch (error) {
-    output.innerHTML = `<pre>Signal checker failed.</pre>`;
+    renderCheckerResult({
+      verdict: "BAD",
+      note: "Request failed",
+      message: "Signal checker fail korse. Abar try koro.",
+    });
   }
 }
 
@@ -427,6 +519,15 @@ document.getElementById("autoRefreshToggle").addEventListener("change", (event) 
 document.getElementById("checkSignalBtn").addEventListener("click", checkUserSignal);
 document.getElementById("pasteTemplateBtn").addEventListener("click", () => {
   document.getElementById("signalInput").value = state.payload.user_signal_checker?.help || "";
+});
+document.getElementById("useQuickTemplateBtn").addEventListener("click", () => {
+  document.getElementById("signalInput").value = buildQuickSignalText();
+});
+document.querySelectorAll(".side-btn").forEach((button) => {
+  button.addEventListener("click", () => {
+    state.checkerSide = button.dataset.side || "LONG";
+    syncSideButtons();
+  });
 });
 
 render(state.payload);

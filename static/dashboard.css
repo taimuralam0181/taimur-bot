@@ -106,6 +106,7 @@ h3 {
 }
 
 select,
+input,
 textarea,
 .action-btn {
     border: 1px solid var(--line);
@@ -116,6 +117,7 @@ textarea,
 }
 
 select,
+input,
 textarea {
     padding: 12px 14px;
 }
@@ -475,6 +477,61 @@ textarea {
     gap: 16px;
 }
 
+.checker-quick-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-bottom: 14px;
+}
+
+.checker-side-group {
+    display: grid;
+    gap: 10px;
+    margin-bottom: 14px;
+}
+
+.checker-side-buttons {
+    display: flex;
+    gap: 10px;
+}
+
+.side-btn {
+    flex: 1;
+    padding: 12px 14px;
+    border-radius: 14px;
+    border: 1px solid var(--line);
+    background: var(--panel-2);
+    color: var(--text);
+    font: inherit;
+    cursor: pointer;
+}
+
+.side-btn.active {
+    border-color: rgba(240, 185, 11, 0.42);
+    background: linear-gradient(135deg, rgba(240, 185, 11, 0.16), rgba(240, 185, 11, 0.08));
+    color: var(--accent);
+}
+
+.advanced-box {
+    margin-top: 14px;
+    margin-bottom: 14px;
+    padding: 12px 14px;
+    border-radius: 16px;
+    border: 1px solid var(--line);
+    background: rgba(255, 255, 255, 0.02);
+}
+
+.advanced-box summary {
+    cursor: pointer;
+    color: var(--muted);
+    font-weight: 600;
+}
+
+.advanced-box textarea {
+    margin-top: 12px;
+    width: 100%;
+}
+
 .checker-actions {
     display: flex;
     gap: 10px;
@@ -490,13 +547,67 @@ textarea {
     min-height: 280px;
 }
 
-.checker-output pre {
+.checker-result {
+    display: grid;
+    gap: 12px;
+}
+
+.checker-result-kicker {
     margin: 0;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    font-size: 0.72rem;
+}
+
+.checker-result h4,
+.checker-result p {
+    margin: 0;
+}
+
+.checker-result-summary {
+    color: #dbe2f0;
+}
+
+.checker-result-points {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+
+.checker-result-points span {
+    padding: 8px 10px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--muted);
+    font-size: 0.8rem;
+}
+
+.checker-result-good {
+    border-left: 4px solid var(--green);
+    padding-left: 12px;
+}
+
+.checker-result-watch {
+    border-left: 4px solid var(--accent);
+    padding-left: 12px;
+}
+
+.checker-result-bad {
+    border-left: 4px solid var(--red);
+    padding-left: 12px;
+}
+
+.checker-result-neutral {
+    border-left: 4px solid var(--blue);
+    padding-left: 12px;
+}
+
+.checker-message {
     white-space: pre-wrap;
     word-break: break-word;
     color: #d5dbea;
-    font-family: "IBM Plex Sans", sans-serif;
-    line-height: 1.5;
+    line-height: 1.55;
 }
 
 .table-wrap {
@@ -556,6 +667,14 @@ td {
     .checker-grid,
     .split-columns {
         grid-template-columns: 1fr;
+    }
+
+    .checker-quick-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .checker-side-buttons {
+        flex-direction: column;
     }
 
     .latest-signal-panel,

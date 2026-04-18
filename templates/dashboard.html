@@ -130,19 +130,53 @@
                 <div class="panel-header">
                     <div>
                         <p class="panel-kicker">Manual Validation</p>
-                        <h3>User Signal Checker</h3>
+                        <h3>Easy Signal Checker</h3>
                     </div>
                 </div>
                 <div class="checker-grid">
                     <div class="checker-form">
-                        <textarea id="signalInput" rows="10" placeholder="{{ payload.user_signal_checker.help }}"></textarea>
+                        <div class="checker-quick-grid">
+                            <div class="selector-wrap">
+                                <label for="checkerPair">Pair</label>
+                                <select id="checkerPair"></select>
+                            </div>
+                            <div class="selector-wrap">
+                                <label for="checkerTimeframe">Timeframe</label>
+                                <select id="checkerTimeframe"></select>
+                            </div>
+                        </div>
+                        <div class="checker-side-group">
+                            <label>Direction</label>
+                            <div class="checker-side-buttons" id="checkerSideButtons">
+                                <button type="button" class="side-btn active" data-side="LONG">LONG</button>
+                                <button type="button" class="side-btn" data-side="SHORT">SHORT</button>
+                            </div>
+                        </div>
+                        <div class="selector-wrap">
+                            <label for="checkerEntry">Entry Price / Zone</label>
+                            <input id="checkerEntry" type="text" placeholder="Example: 84500 or 84500-84750">
+                        </div>
+                        <details class="advanced-box">
+                            <summary>Advanced Input</summary>
+                            <textarea id="signalInput" rows="8" placeholder="{{ payload.user_signal_checker.help }}"></textarea>
+                        </details>
                         <div class="checker-actions">
-                            <button id="checkSignalBtn" class="action-btn action-btn-primary">Check Signal</button>
-                            <button id="pasteTemplateBtn" class="action-btn">Paste Template</button>
+                            <button id="checkSignalBtn" class="action-btn action-btn-primary">Check Now</button>
+                            <button id="pasteTemplateBtn" class="action-btn">Load Template</button>
+                            <button id="useQuickTemplateBtn" class="action-btn">Use Quick Form</button>
                         </div>
                     </div>
                     <div class="checker-output" id="signalCheckerOutput">
-                        <pre>{{ payload.user_signal_checker.help }}</pre>
+                        <div class="checker-result checker-result-neutral">
+                            <p class="checker-result-kicker">Ready</p>
+                            <h4>Signal verdict ekhane dekhabe</h4>
+                            <p class="checker-result-summary">Pair, timeframe, side, ar entry dile bot clean verdict dibe.</p>
+                            <div class="checker-result-points">
+                                <span>GOOD / WATCH / BAD</span>
+                                <span>LONG / SHORT / NO TRADE</span>
+                                <span>Current market reason</span>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </section>
