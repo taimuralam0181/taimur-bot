@@ -3,117 +3,207 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Scalping Dashboard</title>
+    <title>Breakout Scalping Terminal</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/static/dashboard.css">
 </head>
 <body>
-    <div class="app-shell">
-        <aside class="sidebar">
+    <div class="terminal-shell">
+        <header class="topbar">
             <div class="brand">
                 <div class="brand-mark">B</div>
                 <div>
                     <p class="brand-kicker">Breakout Desk</p>
-                    <h1>Scalp Monitor</h1>
+                    <h1>Scalping Terminal</h1>
                 </div>
             </div>
-            <div class="sidebar-card">
-                <p class="sidebar-label">Mode</p>
-                <p class="sidebar-value" id="modeLabel">{{ payload.mode }}</p>
+            <div class="topbar-actions">
+                <div class="selector-wrap">
+                    <label for="pairSelector">Pair</label>
+                    <select id="pairSelector"></select>
+                </div>
+                <button id="manualRefresh" class="action-btn">Refresh Now</button>
+                <label class="toggle">
+                    <input type="checkbox" id="autoRefreshToggle" checked>
+                    <span>Auto Refresh</span>
+                </label>
             </div>
-            <div class="sidebar-card">
-                <p class="sidebar-label">Symbols</p>
-                <div class="pill-row" id="symbolPills"></div>
-            </div>
-            <div class="sidebar-card">
-                <p class="sidebar-label">Timeframes</p>
-                <div class="pill-row" id="intervalPills"></div>
-            </div>
-            <div class="sidebar-card">
-                <p class="sidebar-label">Last Refresh</p>
-                <p class="sidebar-value" id="refreshTime">{{ payload.timestamp }}</p>
-            </div>
-        </aside>
+        </header>
 
-        <main class="main-panel">
-            <section class="hero">
+        <section class="ticker-strip" id="tickerStrip"></section>
+
+        <main class="dashboard-grid">
+            <section class="panel hero-panel">
                 <div>
-                    <p class="eyebrow">Binance-style control view</p>
-                    <h2>Real Breakout Scalping Dashboard</h2>
-                    <p class="hero-copy">5m entry logic, 15m fake-breakout filter, live state panels, and recent closure analytics in one view.</p>
+                    <p class="eyebrow">Binance-inspired monitor</p>
+                    <h2 id="heroTitle">Real Breakout Scalping</h2>
+                    <p class="hero-copy">5m entry trigger, 15m fake-breakout filter, live pair selector, session bias, chart view, and sound-enabled signal dashboard.</p>
                 </div>
                 <div class="hero-badges">
                     <span class="hero-badge live">LIVE</span>
-                    <span class="hero-badge warn">WATCH ALERTS</span>
+                    <span class="hero-badge warn">REAL BREAKOUT ONLY</span>
                 </div>
             </section>
 
             <section class="overview-grid" id="overviewGrid"></section>
 
-            <section class="panel-row">
-                <section class="panel">
-                    <div class="panel-header">
-                        <div>
-                            <p class="panel-kicker">Signal Matrix</p>
-                            <h3>Pairs / Timeframes</h3>
-                        </div>
+            <section class="panel latest-signal-panel">
+                <div class="panel-header">
+                    <div>
+                        <p class="panel-kicker">Signal Focus</p>
+                        <h3>Latest Real Signal</h3>
                     </div>
-                    <div class="table-wrap">
-                        <table>
-                            <thead>
-                                <tr>
-                                    <th>Pair</th>
-                                    <th>TF</th>
-                                    <th>Status</th>
-                                    <th>Tier</th>
-                                    <th>Score</th>
-                                    <th>Entry</th>
-                                    <th>SL</th>
-                                    <th>Remaining</th>
-                                    <th>Last Scan</th>
-                                </tr>
-                            </thead>
-                            <tbody id="signalGridBody"></tbody>
-                        </table>
-                    </div>
-                </section>
+                </div>
+                <div id="latestSignalBox" class="signal-card empty-card"></div>
             </section>
 
-            <section class="panel-row two-up">
-                <section class="panel">
-                    <div class="panel-header">
-                        <div>
-                            <p class="panel-kicker">Recent Closures</p>
-                            <h3>Trade Outcomes</h3>
-                        </div>
+            <section class="panel warning-panel">
+                <div class="panel-header">
+                    <div>
+                        <p class="panel-kicker">15m Filter</p>
+                        <h3>Fake Breakout Warning</h3>
                     </div>
-                    <div class="recent-list" id="recentClosures"></div>
-                </section>
+                </div>
+                <div id="fakeBreakoutBox" class="warning-card"></div>
+            </section>
 
-                <section class="panel">
-                    <div class="panel-header">
-                        <div>
-                            <p class="panel-kicker">Accuracy Lens</p>
-                            <h3>By Pair / Timeframe</h3>
+            <section class="panel sessions-panel">
+                <div class="panel-header">
+                    <div>
+                        <p class="panel-kicker">Market Hours</p>
+                        <h3>Session Status</h3>
+                    </div>
+                </div>
+                <div id="sessionStatusList" class="session-list"></div>
+            </section>
+
+            <section class="panel market-panel">
+                <div class="panel-header">
+                    <div>
+                        <p class="panel-kicker">Selected Pair</p>
+                        <h3>5m / 15m Market Cards</h3>
+                    </div>
+                </div>
+                <div id="marketCards" class="market-cards"></div>
+            </section>
+
+            <section class="panel chart-panel wide">
+                <div class="panel-header">
+                    <div>
+                        <p class="panel-kicker">Chart View</p>
+                        <h3>5m Candle Strip</h3>
+                    </div>
+                </div>
+                <div class="chart-wrap">
+                    <svg id="candlesChart" viewBox="0 0 1000 340" preserveAspectRatio="none"></svg>
+                </div>
+            </section>
+
+            <section class="panel chart-panel">
+                <div class="panel-header">
+                    <div>
+                        <p class="panel-kicker">Stats</p>
+                        <h3>Win / Loss Chart</h3>
+                    </div>
+                </div>
+                <div id="winLossChart" class="bar-chart"></div>
+            </section>
+
+            <section class="panel chart-panel">
+                <div class="panel-header">
+                    <div>
+                        <p class="panel-kicker">History</p>
+                        <h3>Signal Result Chart</h3>
+                    </div>
+                </div>
+                <div id="signalHistoryChart" class="bar-chart history-chart"></div>
+            </section>
+
+            <section class="panel checker-panel wide">
+                <div class="panel-header">
+                    <div>
+                        <p class="panel-kicker">Manual Validation</p>
+                        <h3>User Signal Checker</h3>
+                    </div>
+                </div>
+                <div class="checker-grid">
+                    <div class="checker-form">
+                        <textarea id="signalInput" rows="10" placeholder="{{ payload.user_signal_checker.help }}"></textarea>
+                        <div class="checker-actions">
+                            <button id="checkSignalBtn" class="action-btn action-btn-primary">Check Signal</button>
+                            <button id="pasteTemplateBtn" class="action-btn">Paste Template</button>
                         </div>
                     </div>
-                    <div class="split-columns">
-                        <div>
-                            <p class="mini-title">Pairs</p>
-                            <div class="accuracy-list" id="accuracyPairs"></div>
-                        </div>
-                        <div>
-                            <p class="mini-title">Timeframes</p>
-                            <div class="accuracy-list" id="accuracyIntervals"></div>
-                        </div>
+                    <div class="checker-output" id="signalCheckerOutput">
+                        <pre>{{ payload.user_signal_checker.help }}</pre>
                     </div>
-                </section>
+                </div>
+            </section>
+
+            <section class="panel wide">
+                <div class="panel-header">
+                    <div>
+                        <p class="panel-kicker">State Grid</p>
+                        <h3>Pairs / Timeframes</h3>
+                    </div>
+                </div>
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Pair</th>
+                                <th>TF</th>
+                                <th>Status</th>
+                                <th>Tier</th>
+                                <th>Side</th>
+                                <th>Score</th>
+                                <th>Entry</th>
+                                <th>SL</th>
+                                <th>Remaining</th>
+                                <th>Last Scan</th>
+                            </tr>
+                        </thead>
+                        <tbody id="signalGridBody"></tbody>
+                    </table>
+                </div>
+            </section>
+
+            <section class="panel">
+                <div class="panel-header">
+                    <div>
+                        <p class="panel-kicker">Recent Closures</p>
+                        <h3>Closed Trades</h3>
+                    </div>
+                </div>
+                <div class="recent-list" id="recentClosures"></div>
+            </section>
+
+            <section class="panel">
+                <div class="panel-header">
+                    <div>
+                        <p class="panel-kicker">Accuracy Lens</p>
+                        <h3>By Pair / Timeframe</h3>
+                    </div>
+                </div>
+                <div class="split-columns">
+                    <div>
+                        <p class="mini-title">Pairs</p>
+                        <div class="accuracy-list" id="accuracyPairs"></div>
+                    </div>
+                    <div>
+                        <p class="mini-title">Timeframes</p>
+                        <div class="accuracy-list" id="accuracyIntervals"></div>
+                    </div>
+                </div>
             </section>
         </main>
     </div>
 
+    <audio id="signalAudio">
+        <source src="data:audio/wav;base64,UklGRlQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABAAZGF0YTAAAAA=" type="audio/wav">
+    </audio>
     <script>
         window.__INITIAL_DASHBOARD__ = {{ payload|tojson }};
     </script>
