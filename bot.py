@@ -271,11 +271,11 @@ def load_config() -> Config:
         atr_period=int(os.getenv("BOT_ATR_PERIOD", "14")),
         sr_lookback=int(os.getenv("BOT_SR_LOOKBACK", "12")),
         volume_period=int(os.getenv("BOT_VOLUME_PERIOD", "14")),
-        volume_spike_factor=float(os.getenv("BOT_VOLUME_SPIKE_FACTOR", "1.03")),
-        breakout_buffer_pct=float(os.getenv("BOT_BREAKOUT_BUFFER_PCT", "0.0005")),
-        cooldown_candles=int(os.getenv("BOT_COOLDOWN_CANDLES", "4")),
-        min_signal_score=int(os.getenv("BOT_MIN_SIGNAL_SCORE", "70")),
-        vip_signal_score=int(os.getenv("BOT_VIP_SIGNAL_SCORE", "82")),
+        volume_spike_factor=float(os.getenv("BOT_VOLUME_SPIKE_FACTOR", "1.08")),
+        breakout_buffer_pct=float(os.getenv("BOT_BREAKOUT_BUFFER_PCT", "0.0009")),
+        cooldown_candles=int(os.getenv("BOT_COOLDOWN_CANDLES", "5")),
+        min_signal_score=int(os.getenv("BOT_MIN_SIGNAL_SCORE", "78")),
+        vip_signal_score=int(os.getenv("BOT_VIP_SIGNAL_SCORE", "88")),
         normal_risk_pct=float(os.getenv("BOT_NORMAL_RISK_PCT", "0.35")),
         vip_risk_pct=float(os.getenv("BOT_VIP_RISK_PCT", "0.55")),
         normal_leverage=os.getenv("BOT_NORMAL_LEVERAGE", "5x-8x").strip(),
@@ -285,12 +285,12 @@ def load_config() -> Config:
             "BOT_REQUIRE_HTF_CONFIRMATION", True
         ),
         watch_alert_enabled=parse_bool_env("BOT_WATCH_ALERT_ENABLED", True),
-        watch_alert_score_gap=int(os.getenv("BOT_WATCH_ALERT_SCORE_GAP", "10")),
-        max_extension_atr=float(os.getenv("BOT_MAX_EXTENSION_ATR", "1.6")),
+        watch_alert_score_gap=int(os.getenv("BOT_WATCH_ALERT_SCORE_GAP", "8")),
+        max_extension_atr=float(os.getenv("BOT_MAX_EXTENSION_ATR", "1.2")),
         atr_stop_multiplier=float(os.getenv("BOT_ATR_STOP_MULTIPLIER", "1.0")),
-        tp_one_r=float(os.getenv("BOT_TP1_R", "1.0")),
-        tp_two_r=float(os.getenv("BOT_TP2_R", "1.8")),
-        tp_three_r=float(os.getenv("BOT_TP3_R", "2.8")),
+        tp_one_r=float(os.getenv("BOT_TP1_R", "0.7")),
+        tp_two_r=float(os.getenv("BOT_TP2_R", "1.2")),
+        tp_three_r=float(os.getenv("BOT_TP3_R", "1.8")),
         hourly_update_enabled=parse_bool_env("BOT_HOURLY_UPDATE_ENABLED", True),
         hourly_update_interval_minutes=int(os.getenv("BOT_HOURLY_UPDATE_MINUTES", "60")),
         hourly_update_timeframe=os.getenv("BOT_HOURLY_UPDATE_TIMEFRAME", "5m").strip() or "5m",
@@ -2110,9 +2110,9 @@ def evaluate_long_setup(
     breakout = last.close > resistance * (1 + config.breakout_buffer_pct)
     retest_hold = last.low <= resistance * (1 + config.breakout_buffer_pct) and last.close > resistance
     volume_spike = last.volume >= avg_volume * config.volume_spike_factor
-    rsi_ok = 50 <= rsi_values[-1] <= 72
-    bullish_body = last.close > last.open and (body_size / candle_range) >= 0.45
-    close_near_high = (last.high - last.close) <= candle_range * 0.45
+    rsi_ok = 54 <= rsi_values[-1] <= 68
+    bullish_body = last.close > last.open and (body_size / candle_range) >= 0.55
+    close_near_high = (last.high - last.close) <= candle_range * 0.30
     not_overextended = extension_atr <= config.max_extension_atr
 
     if htf_confirmed:
@@ -2145,7 +2145,7 @@ def evaluate_long_setup(
         score += 10
         reasons.append("Price is not overextended from EMA50")
 
-    structure_confirmed = breakout
+    structure_confirmed = breakout and retest_hold
 
     mandatory_checks = [
         trend_up,
@@ -2221,9 +2221,9 @@ def evaluate_short_setup(
     breakdown = last.close < support * (1 - config.breakout_buffer_pct)
     retest_fail = last.high >= support * (1 - config.breakout_buffer_pct) and last.close < support
     volume_spike = last.volume >= avg_volume * config.volume_spike_factor
-    rsi_ok = 28 <= rsi_values[-1] <= 50
-    bearish_body = last.close < last.open and (body_size / candle_range) >= 0.45
-    close_near_low = (last.close - last.low) <= candle_range * 0.45
+    rsi_ok = 32 <= rsi_values[-1] <= 46
+    bearish_body = last.close < last.open and (body_size / candle_range) >= 0.55
+    close_near_low = (last.close - last.low) <= candle_range * 0.30
     not_overextended = extension_atr <= config.max_extension_atr
 
     if htf_confirmed:
@@ -2256,7 +2256,7 @@ def evaluate_short_setup(
         score += 10
         reasons.append("Price is not overextended from EMA50")
 
-    structure_confirmed = breakdown
+    structure_confirmed = breakdown and retest_fail
 
     mandatory_checks = [
         trend_down,
