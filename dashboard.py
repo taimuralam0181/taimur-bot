@@ -209,30 +209,67 @@ def fetch_market_bundle(symbol: str, interval: str) -> Dict[str, Any]:
     }
 
 
+def build_unavailable_overview(detail: str) -> trading_bot.MarketOverview:
+    return trading_bot.MarketOverview(
+        trend="Unavailable",
+        support_zone="Strong support zone: unavailable",
+        resistance_zone="Strong resistance zone: unavailable",
+        entry_condition="No live entry condition available",
+        rejection_candle="No live rejection candle data",
+        breakout_check=detail,
+        volume_momentum="Volume and momentum unavailable",
+        entry_rule="NO TRADE",
+        trend_bias="UNAVAILABLE",
+        entry_zone_side="NONE",
+        bullish_rejection_valid=False,
+        bearish_rejection_valid=False,
+        strong_bullish_candle=False,
+        strong_bearish_candle=False,
+    )
+
+
+def safe_fetch_market_bundle(symbol: str, interval: str) -> Dict[str, Any]:
+    try:
+        return fetch_market_bundle(symbol, interval)
+    except Exception as exc:
+        return {
+            "symbol": symbol,
+            "interval": interval,
+            "price": 0.0,
+            "price_text": "-",
+            "change_pct": 0.0,
+            "change_text": "-",
+            "overview": build_unavailable_overview(f"Data unavailable: {exc.__class__.__name__}"),
+            "analysis": trading_bot.AnalysisResult(
+                signal=None,
+                market_overview=build_unavailable_overview(f"Data unavailable: {exc.__class__.__name__}"),
+                long_score=0,
+                short_score=0,
+            ),
+            "candles": [],
+        }
+
+
+def safe_bot_text(label: str, builder) -> str:
+    try:
+        return builder()
+    except Exception as exc:
+        return f"{label} unavailable.\nReason: {exc.__class__.__name__}"
+
+
 def build_ticker_rows(symbols: List[str]) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     for symbol in symbols:
-        try:
-            bundle = fetch_market_bundle(symbol, "5m")
-            rows.append(
-                {
-                    "symbol": symbol,
-                    "price": bundle["price_text"],
-                    "change_pct": bundle["change_text"],
-                    "direction": "up" if bundle["change_pct"] >= 0 else "down",
-                    "trend": bundle["overview"].trend,
-                }
-            )
-        except Exception:
-            rows.append(
-                {
-                    "symbol": symbol,
-                    "price": "-",
-                    "change_pct": "-",
-                    "direction": "flat",
-                    "trend": "Unavailable",
-                }
-            )
+        bundle = safe_fetch_market_bundle(symbol, "5m")
+        rows.append(
+            {
+                "symbol": symbol,
+                "price": bundle["price_text"],
+                "change_pct": bundle["change_text"],
+                "direction": "up" if bundle["change_pct"] >= 0 else "down" if bundle["change_pct"] < 0 else "flat",
+                "trend": bundle["overview"].trend,
+            }
+        )
     return rows
 
 
@@ -710,17 +747,32 @@ def build_bot_mirror_panels(state: Dict[str, Any], selected_symbol: str) -> Dict
     training_model = self_learning.load_model()
     return {
         "latest_signal_text": build_latest_signal_message(state),
-        "status": trading_bot.build_status_message(selected_config, state),
+        "status": safe_bot_text(
+            "Bot status",
+            lambda: trading_bot.build_status_message(selected_config, state),
+        ),
         "active_trades": trading_bot.build_active_trades_message(state),
         "accuracy": trading_bot.build_accuracy_message(state),
-        "daily_report": trading_bot.build_daily_report_message(
-            selected_config,
-            trading_bot.current_local_date(),
-            state,
+        "daily_report": safe_bot_text(
+            "Daily report",
+            lambda: trading_bot.build_daily_report_message(
+                selected_config,
+                trading_bot.current_local_date(),
+                state,
+            ),
         ),
-        "market_status": trading_bot.build_market_message(selected_config),
-        "hourly_update": trading_bot.build_hourly_update_message(selected_config),
-        "signal_checker": trading_bot.build_signal_checker_message(selected_config),
+        "market_status": safe_bot_text(
+            "Market status",
+            lambda: trading_bot.build_market_message(selected_config),
+        ),
+        "hourly_update": safe_bot_text(
+            "Hourly update",
+            lambda: trading_bot.build_hourly_update_message(selected_config),
+        ),
+        "signal_checker": safe_bot_text(
+            "Signal checker",
+            lambda: trading_bot.build_signal_checker_message(selected_config),
+        ),
         "training_report": str(
             trading_bot.get_performance_state(state).get("last_training_report", "")
             or self_learning.build_training_report(training_model)
@@ -729,7 +781,7 @@ def build_bot_mirror_panels(state: Dict[str, Any], selected_symbol: str) -> Dict
 
 
 def build_chart_payload(symbol: str, interval: str) -> Dict[str, Any]:
-    bundle = fetch_market_bundle(symbol, interval)
+    bundle = safe_fetch_market_bundle(symbol, interval)
     return {
         "symbol": symbol,
         "interval": interval,
@@ -750,8 +802,8 @@ def build_dashboard_payload(selected_symbol: Optional[str] = None) -> Dict[str, 
     selected = selected_symbol or symbols[0]
     signal_grid = build_signal_grid(state)
 
-    bundle_5m = fetch_market_bundle(selected, "5m")
-    bundle_15m = fetch_market_bundle(selected, "15m")
+    bundle_5m = safe_fetch_market_bundle(selected, "5m")
+    bundle_15m = safe_fetch_market_bundle(selected, "15m")
 
     return {
         "timestamp": datetime.now().astimezone().strftime("%Y-%m-%d %I:%M:%S %p"),
