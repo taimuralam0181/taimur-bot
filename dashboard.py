@@ -559,6 +559,60 @@ def get_latest_real_signal(state: Dict[str, Any]) -> Dict[str, Any]:
     return latest
 
 
+def build_latest_signal_message(state: Dict[str, Any]) -> str:
+    symbols_state = state.get("symbols", {})
+    if not isinstance(symbols_state, dict):
+        return "No active real signal right now."
+
+    latest_trade: Optional[Dict[str, Any]] = None
+    latest_symbol = ""
+    latest_interval = ""
+    latest_time = 0
+
+    for symbol, symbol_state in symbols_state.items():
+        intervals_state = symbol_state.get("intervals", {}) if isinstance(symbol_state, dict) else {}
+        for interval, interval_state in intervals_state.items():
+            if not isinstance(interval_state, dict):
+                continue
+            trade = interval_state.get("active_trade")
+            if not isinstance(trade, dict):
+                continue
+            candle_time = int(trade.get("candle_time", 0) or 0)
+            if candle_time >= latest_time:
+                latest_time = candle_time
+                latest_trade = trade
+                latest_symbol = symbol
+                latest_interval = interval
+
+    if not latest_trade:
+        return "No active real signal right now."
+
+    config = build_analysis_config(latest_symbol, latest_interval)
+    signal = trading_bot.Signal(
+        tier=str(latest_trade.get("tier", "-")),
+        grade=str(latest_trade.get("grade", "-")),
+        setup_type=str(latest_trade.get("setup_type", "-")),
+        setup_note=str(latest_trade.get("setup_note", "-")),
+        verdict=str(latest_trade.get("verdict", "-")),
+        side=str(latest_trade.get("side", "-")),
+        score=int(latest_trade.get("score", 0) or 0),
+        entry=float(latest_trade.get("entry", 0.0) or 0.0),
+        stop_loss=float(latest_trade.get("stop_loss", 0.0) or 0.0),
+        take_profits=[float(tp) for tp in (latest_trade.get("take_profits", []) or [])],
+        reasons=list(latest_trade.get("reasons", []) or []),
+        candle_time=int(latest_trade.get("candle_time", 0) or 0),
+        market_structure_level=float(latest_trade.get("market_structure_level", 0.0) or 0.0),
+        atr=float(latest_trade.get("atr", 0.0) or 0.0),
+        market_overview=list(latest_trade.get("market_overview", []) or []),
+    )
+    return trading_bot.format_signal_message(
+        signal,
+        config,
+        sent_time=str(latest_trade.get("opened_at", "-")),
+        is_demo=False,
+    )
+
+
 def build_fake_breakout_warning(bundle_15m: Dict[str, Any]) -> Dict[str, str]:
     overview = bundle_15m["overview"]
     breakout_text = overview.breakout_check
@@ -649,6 +703,7 @@ def build_user_signal_help_payload() -> Dict[str, str]:
 def build_bot_mirror_panels(state: Dict[str, Any], selected_symbol: str) -> Dict[str, str]:
     selected_config = build_analysis_config(selected_symbol, "5m")
     return {
+        "latest_signal_text": build_latest_signal_message(state),
         "status": trading_bot.build_status_message(selected_config, state),
         "active_trades": trading_bot.build_active_trades_message(state),
         "accuracy": trading_bot.build_accuracy_message(state),

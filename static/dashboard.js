@@ -195,6 +195,7 @@ function renderBotMirror(panels) {
   const container = document.getElementById("botMirrorGrid");
   if (!container) return;
   const items = [
+    ["Latest Signal Text", panels?.latest_signal_text || "No latest signal text available."],
     ["Bot Status", panels?.status || "No status available."],
     ["Active Trades", panels?.active_trades || "No active trade text available."],
     ["Accuracy", panels?.accuracy || "No accuracy text available."],
