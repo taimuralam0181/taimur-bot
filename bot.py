@@ -21,6 +21,8 @@ from telegram.ext import (
     filters,
 )
 
+import self_learning
+
 
 LOGGER = logging.getLogger("pro_trader_bot")
 DEFAULT_MARKET_DATA_URLS = [
@@ -134,6 +136,7 @@ class Signal:
     market_structure_level: float
     atr: float
     market_overview: List[str] = field(default_factory=list)
+    features: Dict[str, object] = field(default_factory=dict)
 
 
 @dataclass
@@ -1142,6 +1145,8 @@ def get_performance_state(state: Dict[str, object]) -> Dict[str, object]:
 
     performance_state.setdefault("last_daily_report_date", "")
     performance_state.setdefault("last_hourly_update_key", "")
+    performance_state.setdefault("last_training_date", "")
+    performance_state.setdefault("last_training_report", "")
     performance_state.setdefault("recent_closed", [])
     return performance_state
 
@@ -1194,6 +1199,45 @@ def update_signal_stats(state: Dict[str, object], signal: Signal, config: Config
         stats_bucket["signals_sent"] = int(stats_bucket.get("signals_sent", 0)) + 1
         tier_key = "vip_signals" if signal.tier == "VIP" else "normal_signals"
         stats_bucket[tier_key] = int(stats_bucket.get(tier_key, 0)) + 1
+
+
+def log_signal_dataset_entry(
+    signal_key: str,
+    signal: Signal,
+    config: Config,
+    market_overview: MarketOverview,
+) -> None:
+    features = signal.features if isinstance(signal.features, dict) else {}
+    tp_values = list(signal.take_profits) + [0.0, 0.0, 0.0]
+    self_learning.record_signal(
+        signal_key,
+        {
+            "symbol": config.symbol,
+            "interval": config.interval,
+            "side": signal.side,
+            "candle_time": signal.candle_time,
+            "opened_at": format_now_local(),
+            "tier": signal.tier,
+            "grade": signal.grade,
+            "score_base": int(features.get("score_before_learning", signal.score)),
+            "score_final": signal.score,
+            "entry": signal.entry,
+            "stop_loss": signal.stop_loss,
+            "tp1": tp_values[0],
+            "tp2": tp_values[1],
+            "tp3": tp_values[2],
+            "trend_bias": market_overview.trend_bias,
+            "breakout_type": market_overview.breakout_check,
+            "entry_rule": market_overview.entry_rule,
+            "volume_ratio": float(features.get("volume_ratio", 0.0) or 0.0),
+            "rsi": float(features.get("rsi", 0.0) or 0.0),
+            "body_ratio": float(features.get("body_ratio", 0.0) or 0.0),
+            "extension_atr": float(features.get("extension_atr", 0.0) or 0.0),
+            "htf_confirmed": bool(features.get("htf_confirmed", False)),
+            "htf_fake_breakout": bool(features.get("htf_fake_breakout", False)),
+            "structure_confirmed": bool(features.get("structure_confirmed", False)),
+        },
+    )
 
 
 def calculate_trade_r_at_price(trade: Dict[str, object], exit_price: float) -> float:
@@ -1286,6 +1330,20 @@ def record_closed_trade(
         }
     )
     performance_state["recent_closed"] = recent_closed[-25:]
+
+    signal_key = str(trade.get("signal_key", ""))
+    if signal_key:
+        self_learning.close_signal(
+            signal_key,
+            {
+                "closed_at": format_local_time(candle_time),
+                "outcome": result_key,
+                "result_r": round(realized_r, 4),
+                "tp1_hit": bool(trade.get("tp1_hit")),
+                "tp2_hit": bool(trade.get("tp2_hit")),
+                "close_reason": close_reason,
+            },
+        )
 
 
 def calculate_win_rate(stats_bucket: Dict[str, object]) -> float:
@@ -1556,6 +1614,18 @@ def maybe_send_daily_report(config: Config, state: Dict[str, object]) -> bool:
     return True
 
 
+def maybe_run_daily_training(state: Dict[str, object]) -> bool:
+    performance_state = get_performance_state(state)
+    training_date = current_local_date()
+    if str(performance_state.get("last_training_date", "")) == training_date:
+        return False
+
+    model = self_learning.train_model()
+    performance_state["last_training_date"] = training_date
+    performance_state["last_training_report"] = self_learning.build_training_report(model)
+    return True
+
+
 def maybe_send_hourly_update(config: Config, state: Dict[str, object]) -> bool:
     if not config.hourly_update_enabled:
         return False
@@ -1629,7 +1699,9 @@ def build_trade_plan(signal: Signal, config: Config) -> Tuple[str, str, str]:
 
 def build_active_trade(signal: Signal, sent_time: str, config: Config) -> Dict[str, object]:
     risk_pct, leverage, leverage_note = build_trade_plan(signal, config)
+    signal_key = f"{config.symbol}|{config.interval}|{signal.side}|{signal.candle_time}"
     return {
+        "signal_key": signal_key,
         "tier": signal.tier,
         "grade": signal.grade,
         "setup_type": signal.setup_type,
@@ -1651,6 +1723,7 @@ def build_active_trade(signal: Signal, sent_time: str, config: Config) -> Dict[s
         "margin_mode": config.margin_mode,
         "candle_time": signal.candle_time,
         "opened_at": sent_time,
+        "features": copy.deepcopy(signal.features),
         "remaining_position_pct": 100,
         "realized_r": 0.0,
         "tp1_hit": False,
@@ -2078,6 +2151,7 @@ def build_signal(
     market_structure_level: float,
     atr: float,
     config: Config,
+    features: Optional[Dict[str, object]] = None,
 ) -> Optional[Signal]:
     risk = abs(entry - stop_loss)
     if risk <= 0:
@@ -2114,6 +2188,7 @@ def build_signal(
         candle_time=candle_time,
         market_structure_level=round_price(market_structure_level),
         atr=round_price(atr),
+        features=features or {},
     )
 
 
@@ -2228,6 +2303,7 @@ def evaluate_long_setup(
         mandatory_checks.append(htf_confirmed)
         mandatory_checks.append(not htf_fake_breakout)
 
+    score_before_learning = score
     learning_note = ""
     if state is not None:
         adjustment, note = calculate_adaptive_score_adjustment(state, config, "LONG")
@@ -2242,6 +2318,17 @@ def evaluate_long_setup(
         score = max(0, min(100, score + regime_adjustment))
         if regime_adjustment != 0:
             learning_note = f"{learning_note} | {regime_note}".strip(" |")
+        model_adjustment, model_note = self_learning.score_adjustment(
+            self_learning.load_model(),
+            symbol=config.symbol,
+            interval=config.interval,
+            side="LONG",
+            trend_bias=market_overview.trend_bias,
+            breakout_type=market_overview.breakout_check,
+        )
+        score = max(0, min(100, score + model_adjustment))
+        if model_adjustment != 0:
+            learning_note = f"{learning_note} | model {model_note}".strip(" |")
 
     if not all(mandatory_checks) or score < config.min_signal_score:
         return score, None
@@ -2259,6 +2346,16 @@ def evaluate_long_setup(
         market_structure_level=resistance,
         atr=atr,
         config=config,
+        features={
+            "score_before_learning": score_before_learning,
+            "volume_ratio": last.volume / max(avg_volume, 1e-9),
+            "rsi": rsi_values[-1],
+            "body_ratio": body_size / candle_range,
+            "extension_atr": extension_atr,
+            "htf_confirmed": htf_confirmed,
+            "htf_fake_breakout": htf_fake_breakout,
+            "structure_confirmed": structure_confirmed,
+        },
     ), score, config, learning_note)
 
 
@@ -2349,6 +2446,7 @@ def evaluate_short_setup(
         mandatory_checks.append(htf_confirmed)
         mandatory_checks.append(not htf_fake_breakout)
 
+    score_before_learning = score
     learning_note = ""
     if state is not None:
         adjustment, note = calculate_adaptive_score_adjustment(state, config, "SHORT")
@@ -2363,6 +2461,17 @@ def evaluate_short_setup(
         score = max(0, min(100, score + regime_adjustment))
         if regime_adjustment != 0:
             learning_note = f"{learning_note} | {regime_note}".strip(" |")
+        model_adjustment, model_note = self_learning.score_adjustment(
+            self_learning.load_model(),
+            symbol=config.symbol,
+            interval=config.interval,
+            side="SHORT",
+            trend_bias=market_overview.trend_bias,
+            breakout_type=market_overview.breakout_check,
+        )
+        score = max(0, min(100, score + model_adjustment))
+        if model_adjustment != 0:
+            learning_note = f"{learning_note} | model {model_note}".strip(" |")
 
     if not all(mandatory_checks) or score < config.min_signal_score:
         return score, None
@@ -2380,6 +2489,16 @@ def evaluate_short_setup(
         market_structure_level=support,
         atr=atr,
         config=config,
+        features={
+            "score_before_learning": score_before_learning,
+            "volume_ratio": last.volume / max(avg_volume, 1e-9),
+            "rsi": rsi_values[-1],
+            "body_ratio": body_size / candle_range,
+            "extension_atr": extension_atr,
+            "htf_confirmed": htf_confirmed,
+            "htf_fake_breakout": htf_fake_breakout,
+            "structure_confirmed": structure_confirmed,
+        },
     ), score, config, learning_note)
 
 
@@ -2777,6 +2896,12 @@ def process_interval(
     active_trade["market_regime_key"] = build_market_regime_key(analysis.market_overview, signal.side)
     active_trade["market_trend_bias"] = analysis.market_overview.trend_bias
     active_trade["market_breakout"] = analysis.market_overview.breakout_check
+    log_signal_dataset_entry(
+        str(active_trade["signal_key"]),
+        signal,
+        interval_config,
+        analysis.market_overview,
+    )
     working_interval_state["active_trade"] = active_trade
     working_interval_state["last_signal_side"] = signal.side
     working_interval_state["last_signal_candle_time"] = signal.candle_time
@@ -3459,6 +3584,13 @@ def scan_markets_once(config: Config, state: Dict[str, object]) -> None:
     except requests.RequestException as exc:
         LOGGER.warning("Daily report send failed: %s", exc)
 
+    try:
+        if maybe_run_daily_training(state):
+            LOGGER.info("Daily self-learning training completed for %s.", current_local_date())
+            state_changed = True
+    except Exception as exc:
+        LOGGER.warning("Daily training failed: %s", exc)
+
     if state_changed:
         try:
             save_state(config.state_file, state)
@@ -3750,6 +3882,7 @@ def build_application(config: Config, state: Dict[str, object]) -> Application:
 
 
 def run() -> None:
+    self_learning.init_dataset_db()
     config = load_config()
     state = load_state(config.state_file)
     application = build_application(config, state)

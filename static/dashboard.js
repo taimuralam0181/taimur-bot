@@ -199,6 +199,7 @@ function renderBotMirror(panels) {
     ["Bot Status", panels?.status || "No status available."],
     ["Active Trades", panels?.active_trades || "No active trade text available."],
     ["Accuracy", panels?.accuracy || "No accuracy text available."],
+    ["Training Report", panels?.training_report || "No training report available."],
     ["Daily Report", panels?.daily_report || "No daily report available."],
     ["Market Status", panels?.market_status || "No market status available."],
     ["Hourly Update", panels?.hourly_update || "No hourly update available."],

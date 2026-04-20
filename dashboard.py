@@ -12,6 +12,7 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
 import bot as trading_bot
+import self_learning
 
 
 ROOT_DIR = Path(__file__).resolve().parent
@@ -244,6 +245,8 @@ def build_overview_cards(state: Dict[str, Any], signal_grid: List[Dict[str, Any]
     for row in signal_grid:
         latest_checked = max(latest_checked, int(row.get("last_checked_raw", 0) or 0))
 
+    model = self_learning.load_model()
+
     return [
         {"label": "Mode", "value": "Real Breakout Scalping"},
         {"label": "Signals Sent", "value": str(int(overall_stats.get("signals_sent", 0) or 0))},
@@ -253,6 +256,8 @@ def build_overview_cards(state: Dict[str, Any], signal_grid: List[Dict[str, Any]
         {"label": "Total Result", "value": format_number(overall_stats.get("total_r", 0.0)) + "R"},
         {"label": "Last Scan", "value": format_candle_time(latest_checked)},
         {"label": "Open Trades", "value": str(sum(1 for row in signal_grid if row["status"] == "LIVE TRADE"))},
+        {"label": "Training Rows", "value": str(int(model.get("total_closed_trades", 0) or 0))},
+        {"label": "Model Win Rate", "value": format_percent(float(model.get("overall_win_rate", 0.0) or 0.0) * 100)},
     ]
 
 
@@ -702,6 +707,7 @@ def build_user_signal_help_payload() -> Dict[str, str]:
 
 def build_bot_mirror_panels(state: Dict[str, Any], selected_symbol: str) -> Dict[str, str]:
     selected_config = build_analysis_config(selected_symbol, "5m")
+    training_model = self_learning.load_model()
     return {
         "latest_signal_text": build_latest_signal_message(state),
         "status": trading_bot.build_status_message(selected_config, state),
@@ -715,6 +721,10 @@ def build_bot_mirror_panels(state: Dict[str, Any], selected_symbol: str) -> Dict
         "market_status": trading_bot.build_market_message(selected_config),
         "hourly_update": trading_bot.build_hourly_update_message(selected_config),
         "signal_checker": trading_bot.build_signal_checker_message(selected_config),
+        "training_report": str(
+            trading_bot.get_performance_state(state).get("last_training_report", "")
+            or self_learning.build_training_report(training_model)
+        ),
     }
 
 
