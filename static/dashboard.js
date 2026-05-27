@@ -133,6 +133,79 @@ function renderLatestSignal(signal) {
   `;
 }
 
+function renderSmsSignalBox(payload) {
+  const box = document.getElementById("smsSignalBox");
+  const status = document.getElementById("smsBoxStatus");
+  if (!box) return;
+
+  const latest = payload.latest_signal || {};
+  const history = payload.signal_history || [];
+  const activeHistory = history.filter((item) => item.status === "ACTIVE");
+  const closedHistory = history.filter((item) => item.status === "CLOSED");
+  const messages = [];
+
+  if (latest && latest.symbol) {
+    messages.push({
+      type: "LIVE SIGNAL",
+      klass: latest.side === "SHORT" ? "sms-short" : "sms-long",
+      title: `${latest.symbol} ${latest.interval} ${latest.side}`,
+      meta: `${latest.tier || "-"} ${latest.grade || "-"} | Score ${latest.score || "-"} | ${latest.opened_at || "-"}`,
+      body: `Entry ${latest.entry || "-"} | SL ${latest.stop_loss || "-"} | TP ${(latest.take_profits || []).join(" / ") || "-"}`,
+      action: "Trade plan active. TP/CLOSE update hole ekhanei show korbe.",
+    });
+  }
+
+  activeHistory.slice(0, 3).forEach((item) => {
+    if (latest.symbol && item.symbol === latest.symbol && item.interval === latest.interval && item.side === latest.side) return;
+    messages.push({
+      type: "ACTIVE",
+      klass: item.side === "SHORT" ? "sms-short" : "sms-long",
+      title: `${item.symbol} ${item.interval} ${item.side}`,
+      meta: `${item.tier || "-"} ${item.grade || "-"} | Score ${item.score || "-"} | ${item.opened_at || "-"}`,
+      body: `Entry ${item.entry || "-"} | SL ${item.stop_loss || "-"}`,
+      action: "Active signal tracking.",
+    });
+  });
+
+  closedHistory.slice(0, 3).forEach((item) => {
+    const result = Number(item.result_r);
+    messages.push({
+      type: "UPDATE",
+      klass: Number.isFinite(result) && result >= 0 ? "sms-profit" : "sms-loss",
+      title: `${item.symbol} ${item.interval} ${item.side}`,
+      meta: `${item.status || "CLOSED"} | ${item.closed_at || "-"}`,
+      body: `${item.close_reason || "Closed"} | Result ${item.result_r || "0"}R`,
+      action: "Trade update saved in history.",
+    });
+  });
+
+  if (status) {
+    status.textContent = messages.length ? `${messages.length} MESSAGE` : "WAITING";
+    status.className = `sms-status ${messages.length ? "sms-status-live" : ""}`;
+  }
+
+  if (!messages.length) {
+    box.innerHTML = `<article class="sms-message sms-empty">No active signal yet. Bot signal ashlei ekhane message asbe ar sound bajbe.</article>`;
+    return;
+  }
+
+  box.innerHTML = messages
+    .map(
+      (message) => `
+        <article class="sms-message ${message.klass}">
+          <div class="sms-message-top">
+            <span class="sms-type">${escapeHtml(message.type)}</span>
+            <strong>${escapeHtml(message.title)}</strong>
+          </div>
+          <p class="sms-meta">${escapeHtml(message.meta)}</p>
+          <p class="sms-body">${escapeHtml(message.body)}</p>
+          <p class="sms-action">${escapeHtml(message.action)}</p>
+        </article>
+      `
+    )
+    .join("");
+}
+
 function renderFakeBreakoutWarning(warning) {
   const box = document.getElementById("fakeBreakoutBox");
   const status = (warning.status || "NEUTRAL").toLowerCase().replace(" ", "-");
@@ -401,8 +474,13 @@ function renderCandles(chartPayload) {
 
 function maybePlaySignalSound(payload) {
   const latest = payload.latest_signal || {};
-  const signature = `${latest.symbol || ""}|${latest.interval || ""}|${latest.side || ""}|${latest.opened_at || ""}`;
-  if (!latest.symbol || !signature) return;
+  const latestSignature = `${latest.symbol || ""}|${latest.interval || ""}|${latest.side || ""}|${latest.opened_at || ""}`;
+  const historySignature = (payload.signal_history || [])
+    .slice(0, 5)
+    .map((item) => `${item.status || ""}:${item.symbol || ""}:${item.interval || ""}:${item.side || ""}:${item.opened_at || ""}:${item.closed_at || ""}:${item.result_r || ""}`)
+    .join("|");
+  const signature = latest.symbol ? latestSignature : historySignature;
+  if (!signature) return;
   if (!state.lastSignalSignature) {
     state.lastSignalSignature = signature;
     return;
@@ -595,6 +673,7 @@ function render(payload) {
   renderTicker(payload.ticker_rows || []);
   renderOverview(payload.overview_cards || []);
   renderLatestSignal(payload.latest_signal || {});
+  renderSmsSignalBox(payload);
   renderFakeBreakoutWarning(payload.fake_breakout_warning || {});
   renderSessions(payload.session_status || []);
   renderBotMirror(payload.bot_mirror || {});

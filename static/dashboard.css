@@ -234,6 +234,94 @@ textarea {
     grid-column: span 12;
 }
 
+.sms-box-panel {
+    border-color: rgba(240, 185, 11, 0.22);
+    background:
+        linear-gradient(135deg, rgba(240, 185, 11, 0.08), transparent 42%),
+        var(--panel);
+}
+
+.sms-status {
+    padding: 7px 11px;
+    border-radius: 999px;
+    color: var(--muted);
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid var(--line);
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+}
+
+.sms-status-live {
+    color: var(--accent);
+    background: rgba(240, 185, 11, 0.12);
+    border-color: rgba(240, 185, 11, 0.28);
+}
+
+.sms-signal-box {
+    display: grid;
+    gap: 10px;
+    max-height: 360px;
+    overflow: auto;
+    padding-right: 4px;
+}
+
+.sms-message {
+    padding: 14px;
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.035);
+    border: 1px solid var(--line);
+}
+
+.sms-message-top {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    align-items: center;
+}
+
+.sms-type {
+    padding: 5px 8px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--muted);
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+}
+
+.sms-meta,
+.sms-body,
+.sms-action {
+    margin: 8px 0 0;
+    color: var(--muted);
+}
+
+.sms-body {
+    color: var(--text);
+    font-weight: 600;
+}
+
+.sms-long {
+    border-color: rgba(14, 203, 129, 0.28);
+}
+
+.sms-short {
+    border-color: rgba(246, 70, 93, 0.28);
+}
+
+.sms-profit {
+    border-color: rgba(14, 203, 129, 0.2);
+}
+
+.sms-loss {
+    border-color: rgba(246, 70, 93, 0.24);
+}
+
+.sms-empty {
+    color: var(--muted);
+}
+
 .chart-panel {
     grid-column: span 6;
 }
