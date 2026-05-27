@@ -1,0 +1,28 @@
+services:
+  - type: web
+    name: taimur-bot-dashboard
+    runtime: docker
+    plan: free
+    envVars:
+      - key: APP_MODE
+        value: web
+      - key: BOT_TOKEN
+        sync: false
+      - key: CHAT_ID
+        sync: false
+
+  - type: worker
+    name: taimur-bot-worker
+    runtime: docker
+    plan: starter
+    envVars:
+      - key: APP_MODE
+        value: worker
+      - key: BOT_TOKEN
+        sync: false
+      - key: CHAT_ID
+        sync: false
+      - key: BOT_SYMBOLS
+        value: BTCUSDT,ETHUSDT,SOLUSDT
+      - key: BOT_INTERVALS
+        value: 5m,15m
